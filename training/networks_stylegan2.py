@@ -432,14 +432,15 @@ def G_synthesis_stylegan2(
     fused_modconv       = True,         # Implement modulated_conv2d_layer() as a single fused op?
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    RES_LOG_2_ACCOUNTING = 4 # for now hardcoded, only square values work
     resolution = resolution_h
-    res_log2 = int(np.log2(resolution_h / 4))
+    res_log2 = int(np.log2(resolution_h / RES_LOG_2_ACCOUNTING))
     if resolution_w < resolution_h:
         resolution = resolution_w
-        res_log2 = int(np.log2(resolution_w / 4))
+        res_log2 = int(np.log2(resolution_w / RES_LOG_2_ACCOUNTING))
     
-    min_h = 4
-    min_w = 4
+    min_h = RES_LOG_2_ACCOUNTING
+    min_w = RES_LOG_2_ACCOUNTING
     #resolution_log2 = int(np.log2(resolution))
     #assert resolution == 2**resolution_log2 and resolution >= 4
     assert min_h > 2 and min_w >2 and res_log2>=1
@@ -681,14 +682,16 @@ def D_stylegan2(
     resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    RES_LOG_2_ACCOUNTING = 4 # for now hardcoded, only square values work
     resolution = resolution_h
-    res_log2 = int(np.log2(resolution_h))
+    res_log2 = int(np.log2(resolution_h / RES_LOG_2_ACCOUNTING))
     if resolution_w < resolution_h:
         resolution = resolution_w
-        res_log2 = int(np.log2(resolution_w))
+        res_log2 = int(np.log2(resolution_w / RES_LOG_2_ACCOUNTING))
     
-    min_h = 4
-    min_w = 4
+    min_h = RES_LOG_2_ACCOUNTING
+    min_w = RES_LOG_2_ACCOUNTING
+
     #resolution_log2 = int(np.log2(resolution))
     #assert resolution == 2**resolution_log2 and resolution >= 4
     assert min_h > 2 and min_w >2 and res_log2>=1
