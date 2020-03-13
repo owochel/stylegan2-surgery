@@ -418,10 +418,8 @@ def G_synthesis_stylegan2(
     dlatents_in,                        # Input: Disentangled latents (W) [minibatch, num_layers, dlatent_size].
     dlatent_size        = 512,          # Disentangled latent (W) dimensionality.
     num_channels        = 3,            # Number of output color channels.
-    resolution          = 1024,         # Output resolution.
-    min_h               = 4,
-    min_w               = 4,
-    res_log2            = 8,
+    resolution_h        = 1024,
+    resolution_w        = 1024,
     fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
     fmap_min            = 1,            # Minimum number of feature maps in any layer.
@@ -434,9 +432,19 @@ def G_synthesis_stylegan2(
     fused_modconv       = True,         # Implement modulated_conv2d_layer() as a single fused op?
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    resolution = resolution_h
+    res_log2 = int(np.log2(resolution_h / 4))
+    if resolution_w < resolution_h:
+        resolution = resolution_w
+        res_log2 = int(np.log2(resolution_w / 4))
+    
+    min_h = 4
+    min_w = 4
     #resolution_log2 = int(np.log2(resolution))
     #assert resolution == 2**resolution_log2 and resolution >= 4
     assert min_h > 2 and min_w >2 and res_log2>=1
+
+
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
@@ -658,10 +666,8 @@ def D_stylegan2(
     images_in,                          # First input: Images [minibatch, channel, height, width].
     labels_in,                          # Second input: Labels [minibatch, label_size].
     num_channels        = 3,            # Number of input color channels. Overridden based on dataset.
-    resolution          = 1024,         # Input resolution. Overridden based on dataset.
-    min_h               = 4,            # min height block
-    min_w               = 4,            # min width block
-    res_log2            = 8,            # output size [min_h * 2^res_log2, min_w * 2^res_log2]
+    resolution_h        = 1024,
+    resolution_w        = 1024,
     label_size          = 0,            # Dimensionality of the labels, 0 if no labels. Overridden based on dataset.
     fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
@@ -675,6 +681,14 @@ def D_stylegan2(
     resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    resolution = resolution_h
+    res_log2 = int(np.log2(resolution_h))
+    if resolution_w < resolution_h:
+        resolution = resolution_w
+        res_log2 = int(np.log2(resolution_w))
+    
+    min_h = 4
+    min_w = 4
     #resolution_log2 = int(np.log2(resolution))
     #assert resolution == 2**resolution_log2 and resolution >= 4
     assert min_h > 2 and min_w >2 and res_log2>=1

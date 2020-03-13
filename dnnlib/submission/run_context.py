@@ -50,9 +50,10 @@ class RunContext(object):
             print("RunContext.config_module parameter support has been removed.")
 
         # write out details about the run to a text file
-        self.run_txt_data = {"task_name": submit_config.task_name, "host_name": submit_config.host_name, "start_time": datetime.datetime.now().isoformat(sep=" ")}
-        with open(os.path.join(submit_config.run_dir, "run.txt"), "w") as f:
-            pprint.pprint(self.run_txt_data, stream=f, indent=4, width=200, compact=False)
+        if submit_config.submit_target != submit.SubmitTarget.DIAGNOSTIC:
+            self.run_txt_data = {"task_name": submit_config.task_name, "host_name": submit_config.host_name, "start_time": datetime.datetime.now().isoformat(sep=" ")}
+            with open(os.path.join(submit_config.run_dir, "run.txt"), "w") as f:
+                pprint.pprint(self.run_txt_data, stream=f, indent=4, width=200, compact=False)
 
     def __enter__(self) -> "RunContext":
         return self
@@ -92,9 +93,10 @@ class RunContext(object):
         Should only be called once."""
         if not self.has_closed:
             # update the run.txt with stopping time
-            self.run_txt_data["stop_time"] = datetime.datetime.now().isoformat(sep=" ")
-            with open(os.path.join(self.submit_config.run_dir, "run.txt"), "w") as f:
-                pprint.pprint(self.run_txt_data, stream=f, indent=4, width=200, compact=False)
+            if self.submit_config.submit_target != submit.SubmitTarget.DIAGNOSTIC:
+                self.run_txt_data["stop_time"] = datetime.datetime.now().isoformat(sep=" ")
+                with open(os.path.join(self.submit_config.run_dir, "run.txt"), "w") as f:
+                    pprint.pprint(self.run_txt_data, stream=f, indent=4, width=200, compact=False)
             self.has_closed = True
 
             # detach the global singleton

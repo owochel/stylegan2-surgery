@@ -32,6 +32,7 @@ class SubmitTarget(Enum):
     LOCAL: Run it locally.
     """
     LOCAL = 1
+    DIAGNOSTIC = 17
 
 
 class PathType(Enum):
@@ -293,7 +294,8 @@ def run_wrapper(submit_config: SubmitConfig) -> None:
             # Defer sys.exit(1) to happen after we close the logs and create a _finished.txt
             exit_with_errcode = True
     finally:
-        open(os.path.join(submit_config.run_dir, "_finished.txt"), "w").close()
+        if submit_config.submit_target != SubmitTarget.DIAGNOSTIC:
+            open(os.path.join(submit_config.run_dir, "_finished.txt"), "w").close()
 
     dnnlib.RunContext.get().close()
     dnnlib.submit_config = None
@@ -340,4 +342,25 @@ def submit_run(submit_config: SubmitConfig, run_func_name: str, **run_func_kwarg
     # Farm specific preparations for a submit
     farm.finalize_submit_config(submit_config, host_run_dir)
     _populate_run_dir(submit_config, host_run_dir)
+    return farm.submit(submit_config, host_run_dir)
+
+def submit_diagnostic(submit_config: SubmitConfig, run_func_name: str, **run_func_kwargs) -> None:
+    """Launch a run without creating a run directory."""
+    submit_config = copy.deepcopy(submit_config)
+
+    submit_target = submit_config.submit_target
+    farm = None
+    if submit_target == SubmitTarget.LOCAL or submit_target == SubmitTarget.DIAGNOSTIC:
+        farm = internal.local.Target()
+    assert farm is not None # unknown target
+
+    if submit_config.user_name is None:
+        submit_config.user_name = get_user_name()
+
+    submit_config.run_func_name = run_func_name
+    submit_config.run_func_kwargs = run_func_kwargs
+
+    host_run_dir = ""
+    # Farm specific preparations for a submit
+    farm.finalize_submit_config(submit_config, host_run_dir)
     return farm.submit(submit_config, host_run_dir)
