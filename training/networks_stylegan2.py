@@ -418,8 +418,8 @@ def G_synthesis_stylegan2(
     dlatents_in,                        # Input: Disentangled latents (W) [minibatch, num_layers, dlatent_size].
     dlatent_size        = 512,          # Disentangled latent (W) dimensionality.
     num_channels        = 3,            # Number of output color channels.
-    resolution_h        = 1024,
-    resolution_w        = 1024,
+    resolution_h        = -1,
+    resolution_w        = -1,
     fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
     fmap_min            = 1,            # Minimum number of feature maps in any layer.
@@ -432,25 +432,25 @@ def G_synthesis_stylegan2(
     fused_modconv       = True,         # Implement modulated_conv2d_layer() as a single fused op?
     **_kwargs):                         # Ignore unrecognized keyword args.
 
-    RES_LOG_2_ACCOUNTING = 4 # for now hardcoded, only square values work
-    resolution = resolution_h
-    res_log2 = int(np.log2(resolution_h / RES_LOG_2_ACCOUNTING))
-    if resolution_w < resolution_h:
-        resolution = resolution_w
-        res_log2 = int(np.log2(resolution_w / RES_LOG_2_ACCOUNTING))
-    
-    min_h = RES_LOG_2_ACCOUNTING
-    min_w = RES_LOG_2_ACCOUNTING
-    #resolution_log2 = int(np.log2(resolution))
-    #assert resolution == 2**resolution_log2 and resolution >= 4
-    assert min_h > 2 and min_w >2 and res_log2>=1
 
+    res_log2_h = int(np.log2(resolution_h))
+    res_log2_w = int(np.log2(resolution_w))
+    
+    assert resolution_h == 2**res_log2_h
+    assert resolution_w == 2**res_log2_w
+    
+    res_log2_max = max(res_log2_h, res_log2_w)
+    
+    # temp for now, restrict dimensions
+    min_h = 4 
+    min_w = 4
+    
 
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
     #num_layers = resolution_log2 * 2 - 2
-    num_layers = res_log2 * 2 + 2
+    num_layers = res_log2_max * 2 + 2
     images_out = None
 
     # Primary inputs.
@@ -546,12 +546,15 @@ def G_synthesis_stylegan2(
         if architecture == 'skip':
             y = torgb(x, y, 0)
     # Main layers.
-    for res in range(1, res_log2 + 1):
-        with tf.variable_scope('%dx%d' % (min_h*2**res, min_w*2**res)):
+    res_log2_min = int(np.log2(min_h))
+    assert min_h == 2**res_log2_min
+    assert res_log2_min < res_log2_max
+    for res in range(res_log2_min + 1, res_log2_max + 1):
+        with tf.variable_scope('%dx%d' % (2**res,2**res)):
             x = block(x, res)
             if architecture == 'skip':
                 y = upsample(y)
-            if architecture == 'skip' or res == resolution_log2:
+            if architecture == 'skip' or res == res_log2_max:
                 y = torgb(x, y, res)
     images_out = y
 
@@ -667,8 +670,8 @@ def D_stylegan2(
     images_in,                          # First input: Images [minibatch, channel, height, width].
     labels_in,                          # Second input: Labels [minibatch, label_size].
     num_channels        = 3,            # Number of input color channels. Overridden based on dataset.
-    resolution_h        = 1024,
-    resolution_w        = 1024,
+    resolution_h        = -1,
+    resolution_w        = -1,
     label_size          = 0,            # Dimensionality of the labels, 0 if no labels. Overridden based on dataset.
     fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
@@ -682,25 +685,25 @@ def D_stylegan2(
     resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
-    RES_LOG_2_ACCOUNTING = 4 # for now hardcoded, only square values work
-    resolution = resolution_h
-    res_log2 = int(np.log2(resolution_h / RES_LOG_2_ACCOUNTING))
-    if resolution_w < resolution_h:
-        resolution = resolution_w
-        res_log2 = int(np.log2(resolution_w / RES_LOG_2_ACCOUNTING))
     
-    min_h = RES_LOG_2_ACCOUNTING
-    min_w = RES_LOG_2_ACCOUNTING
-
-    #resolution_log2 = int(np.log2(resolution))
-    #assert resolution == 2**resolution_log2 and resolution >= 4
-    assert min_h > 2 and min_w >2 and res_log2>=1
+    res_log2_h = int(np.log2(resolution_h))
+    res_log2_w = int(np.log2(resolution_w))
+    
+    assert resolution_h == 2**res_log2_h
+    assert resolution_w == 2**res_log2_w
+    
+    res_log2_max = max(res_log2_h, res_log2_w)
+    
+    # temp for now, restrict dimensions
+    min_h = 4 
+    min_w = 4
+    
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
 
     #images_in.set_shape([None, num_channels, resolution, resolution])
-    images_in.set_shape([None, num_channels, min_h*2**res_log2, min_w*2**res_log2])
+    images_in.set_shape([None, num_channels, resolution_h, resolution_w])
     labels_in.set_shape([None, label_size])
     images_in = tf.cast(images_in, dtype)
     labels_in = tf.cast(labels_in, dtype)
@@ -743,6 +746,9 @@ def D_stylegan2(
             return downsample_2d(y, k=resample_kernel)
 
     # Main layers.
+    res_log2_min = int(np.log2(min_h))
+    assert min_h == 2**res_log2_min
+    assert res_log2_min < res_log2_max
     x = None
     y = images_in
     """
@@ -754,9 +760,9 @@ def D_stylegan2(
             if architecture == 'skip':
                 y = downsample(y)
     """
-    for res in range(res_log2, 0, -1):
-        with tf.variable_scope('%dx%d' % (min_h*2**res, min_w*2**res)):
-            if architecture == 'skip' or res == res_log2:
+    for res in range(res_log2_max, res_log2_min, -1):
+        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
+            if architecture == 'skip' or res == res_log2_max:
                 x = fromrgb(x, y, res)
             x = block(x, res)
             if architecture == 'skip':

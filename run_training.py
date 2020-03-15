@@ -33,7 +33,7 @@ _valid_configs = [
 
 #----------------------------------------------------------------------------
 
-def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, mirror_augment_v, metrics, min_h, min_w, res_log2, lr, cond, resume_pkl, resume_kimg):
+def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, mirror_augment_v, metrics, height, width, lr, cond, resume_pkl, resume_kimg):
     train     = EasyDict(run_func_name='training.training_loop.training_loop') # Options for training loop.
     G         = EasyDict(func_name='training.networks_stylegan2.G_main')       # Options for generator network.
     D         = EasyDict(func_name='training.networks_stylegan2.D_stylegan2')  # Options for discriminator network.
@@ -62,9 +62,9 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
 
     desc += '-' + dataset
     dataset_args = EasyDict(tfrecord_dir=dataset)
-    G.min_h = D.min_h = dataset_args.min_h = min_h
-    G.min_w = D.min_w = dataset_args.min_w = min_w
-    G.res_log2 = D.res_log2 = dataset_args.res_log2 = res_log2
+    # G.min_h = D.min_h = dataset_args.min_h = min_h
+    # G.min_w = D.min_w = dataset_args.min_w = min_w
+    # G.res_log2 = D.res_log2 = dataset_args.res_log2 = res_log2
     assert num_gpus in [1, 2, 4, 8]
     sc.num_gpus = num_gpus
     desc += '-%dgpu' % num_gpus
@@ -116,6 +116,11 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
 
     if gamma is not None:
         D_loss.gamma = gamma
+
+    G.update(resolution_h=height)
+    G.update(resolution_w=width)
+    D.update(resolution_h=height)
+    D.update(resolution_w=width)
 
     sc.submit_target = dnnlib.SubmitTarget.LOCAL
     sc.local.do_not_copy_source_files = True
@@ -177,10 +182,9 @@ def main():
     parser.add_argument('--gamma', help='R1 regularization weight (default is config dependent)', default=None, type=float)
     parser.add_argument('--mirror-augment', help='Mirror augment (default: %(default)s)', default=False, metavar='BOOL', type=_str_to_bool)
     parser.add_argument('--mirror-augment-v', help='Mirror augment vertically (default: %(default)s)', default=False, metavar='BOOL', type=_str_to_bool)
-    parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: %(default)s)', default='fid50k', type=_parse_comma_sep)
-    parser.add_argument('--min-h', help='lowest dim of height', default=4, type=int)
-    parser.add_argument('--min-w', help='lowest dim of width', default=4, type=int)
-    parser.add_argument('--res-log2', help='multiplier for image size, the training image size (height, width) should be (min_h * 2**res_log2, min_w * 2**res_log2)', default=4, type=int)
+    parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: fid50k)', default='none', type=_parse_comma_sep)
+    parser.add_argument('--height', help='dimension of height of input/output images (e.g., 1024)', required=True, type=int)
+    parser.add_argument('--width', help='dimension of width of input/output images (e.g., 1024)', required=True, type=int)
     parser.add_argument('--lr', help='base learning rate', default=0.003, type=float)
     parser.add_argument('--cond', help='conditional model', default=False, metavar='BOOL', type=_str_to_bool)
     parser.add_argument('--resume-pkl', help='pkl to resume training from: None)', default=None, type=str)
