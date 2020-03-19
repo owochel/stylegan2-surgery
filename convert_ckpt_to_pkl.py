@@ -13,6 +13,7 @@ def main():
     )
     parser.add_argument('--ckpt_model_dir', help='The directory with the ckpt files', required=True)
     parser.add_argument('--reference_pkl', help='A reference pkl of a StyleGAN2, must have the exact same variables as ckpt (will not be overwritten)', required=True)
+    parser.add_argument('--prefix', default='')
 
     args = parser.parse_args()
 
@@ -32,7 +33,7 @@ def main():
     saver.restore(sess, ckpt)
 
     out_pkl_iteration = ckpt.split('ckpt-')[-1]
-    out_pkl = './model.ckpt-'+out_pkl_iteration+'.pkl'
+    out_pkl = './'+args.prefix+'model.ckpt-'+out_pkl_iteration+'.pkl'
     print('Saving %s' % out_pkl)
     misc.save_pkl((G, D, Gs), out_pkl)
 
