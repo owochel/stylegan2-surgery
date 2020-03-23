@@ -9,6 +9,12 @@ import copy
 import os
 import sys
 
+import warnings
+warnings.filterwarnings('ignore',category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+import tensorflow as tf
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
 import dnnlib
 from dnnlib import EasyDict
 

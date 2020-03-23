@@ -11,8 +11,7 @@ import tensorflow as tf
 # ----------------------------------------------------------------------------
 # Parse individual image from a tfrecords file.
 
-
-def parse_tfrecord_tf(record):
+def parse_tfrecord_tf_aydao(record):
     features = tf.parse_single_example(
         record,
         features={
@@ -20,18 +19,7 @@ def parse_tfrecord_tf(record):
             "data": tf.FixedLenFeature([], tf.string),
         },
     )
-    data = tf.decode_raw(features["data"], tf.uint8)
-    return tf.reshape(data, features["shape"])
-
-def parse_tfrecord_tf_raw(record):
-    features = tf.parse_single_example(
-        record,
-        features={
-            "shape": tf.FixedLenFeature([3], tf.int64),
-            "img": tf.FixedLenFeature([], tf.string),
-        },
-    )
-    image = tf.image.decode_image(features['img']) 
+    image = tf.image.decode_image(features['data']) 
     return tf.transpose(image, [2,0,1]) 
     #return tf.reshape(data, features["shape"])
 
@@ -53,6 +41,17 @@ def parse_tfrecord_np_raw(record):
         "shape"
     ].int64_list.value  # temporary pylint workaround # pylint: disable=no-member
     img = ex.features.feature["img"].bytes_list.value[
+        0
+    ]  # temporary pylint workaround # pylint: disable=no-member
+    return shape
+
+def parse_tfrecord_np_aydao(record):
+    ex = tf.train.Example()
+    ex.ParseFromString(record)
+    shape = ex.features.feature[
+        "shape"
+    ].int64_list.value  # temporary pylint workaround # pylint: disable=no-member
+    data = ex.features.feature["data"].bytes_list.value[
         0
     ]  # temporary pylint workaround # pylint: disable=no-member
     return shape
@@ -109,8 +108,8 @@ class TFRecordDataset:
                 tf.python_io.TFRecordCompressionType.NONE
             )
             for record in tf.python_io.tf_record_iterator(tfr_file, tfr_opt):
-                tfr_shapes.append(parse_tfrecord_np(record).shape)
-                #tfr_shapes.append(parse_tfrecord_np_raw(record))
+                #tfr_shapes.append(parse_tfrecord_np(record).shape)
+                tfr_shapes.append(parse_tfrecord_np_aydao(record))
                 break
 
         # Autodetect label filename.
@@ -163,8 +162,7 @@ class TFRecordDataset:
             dset = tf.data.TFRecordDataset(
                 tfr_file, compression_type="", buffer_size=buffer_mb << 20
             )
-            dset = dset.map(parse_tfrecord_tf, num_parallel_calls=num_threads)
-            #dset = dset.map(parse_tfrecord_tf_raw, num_parallel_calls=num_threads)
+            dset = dset.map(parse_tfrecord_tf_aydao, num_parallel_calls=num_threads)
             dset = tf.data.Dataset.zip((dset, self._tf_labels_dataset))
             bytes_per_item = np.prod(tfr_shape) * np.dtype(self.dtype).itemsize
             if shuffle_mb > 0:

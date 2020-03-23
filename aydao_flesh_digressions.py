@@ -5,13 +5,17 @@
 #
 #   Based on halcy's circular interpolation script https://pastebin.com/RTtV2UY7
 #
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+import tensorflow as tf
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 import dnnlib.tflib as tflib
 import math
 import moviepy.editor
 from numpy import linalg
 import numpy as np
 import pickle
-import tensorflow as tf
 import argparse
 from datetime import datetime
 
