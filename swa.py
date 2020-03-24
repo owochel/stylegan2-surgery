@@ -52,7 +52,7 @@ def apply_swa_to_checkpoints(models):
 
 parser = argparse.ArgumentParser(description='Perform stochastic weight averaging', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('results_dir', help='Directory with network checkpoints for weight averaging')
-parser.add_argument('--filespec', default='network*.pkl', help='The files to average')
+parser.add_argument('--filespec', default='*.pkl', help='The files to average')
 parser.add_argument('--output_model', default='network_avg.pkl', help='The averaged model to output')
 
 args, other_args = parser.parse_known_args()
