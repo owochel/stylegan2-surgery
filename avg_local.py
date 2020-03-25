@@ -1,3 +1,9 @@
+#   ~~~ aydao ~~~~ 2020 ~~~
+#
+#   Based on pbaylies' swa.py script
+#   except that this computes the average instead of the moving average 
+#   and does so locally in this script, rather than by modifying network.py
+#
 import os
 import glob
 import pickle
@@ -16,9 +22,9 @@ def add_networks(dst_net, src_net):
     names = []
     for name in dst_net.trainables.keys():
         if name not in src_net.trainables:
-            print("Not restoring (not present):     {}".format(name))
+            print('Not restoring (not present):     {}'.format(name))
         elif dst_net.trainables[name].shape != src_net.trainables[name].shape:
-            print("Not restoring (different shape): {}".format(name))
+            print('Not restoring (different shape): {}'.format(name))
 
         if name in src_net.trainables and dst_net.trainables[name].shape == src_net.trainables[name].shape:
             names.append(name)
@@ -38,13 +44,13 @@ def main(args):
     files = glob.glob(os.path.join(args.results_dir,args.filespec))
     files.sort()
     network_count = len(files)
-    print("Discovered %s networks" % str(network_count))
+    print('Discovered %s networks' % str(network_count))
     
     tflib.init_tf()
 
     avg_G, avg_D, avg_Gs = None, None, None
     for pkl_file in files:
-        G, D, Gs = pickle.load(open(pkl_file, "rb"))
+        G, D, Gs = pickle.load(open(pkl_file, 'rb'))
         if avg_G == None:
             avg_G, avg_D, avg_Gs = G, D, Gs
         else:
@@ -63,7 +69,7 @@ def main(args):
         pickle.dump(models, f)
     print('Final averaged weights saved to file.')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Perform weight averaging', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('results_dir', help='Directory with network checkpoints for weight averaging')

@@ -1,3 +1,8 @@
+#   ~~~ aydao ~~~~ 2020 ~~~
+#
+#   Create a .pkl for an uninitialized StyleGAN2 network
+#
+
 import argparse
 import copy
 import os

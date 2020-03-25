@@ -1,3 +1,7 @@
+#   ~~~ aydao ~~~~ 2020 ~~~
+#
+#   Convert a StyleGAN2 network stored in ckpt files to a .pkl
+#
 import argparse
 import pickle
 import numpy as np
