@@ -263,7 +263,7 @@ def G_mapping(
     mapping_fmaps           = 512,          # Number of activations in the mapping layers.
     mapping_lrmul           = 0.01,         # Learning rate multiplier for the mapping layers.
     mapping_nonlinearity    = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
-    normalize_latents       = False,         # Normalize latent vectors (Z) before feeding them to the mapping layers?
+    normalize_latents       = True,         # Normalize latent vectors (Z) before feeding them to the mapping layers?
     dtype                   = 'float32',    # Data type to use for activations and outputs.
     **_kwargs):                             # Ignore unrecognized keyword args.
 
@@ -286,8 +286,10 @@ def G_mapping(
     # Normalize latents.
     if normalize_latents:
         with tf.variable_scope('Normalize'):
-            # PixelNorm
-            x *= tf.rsqrt(tf.reduce_mean(tf.square(x), axis=1, keepdims=True) + 1e-8)
+            # # PixelNorm
+            # x *= tf.rsqrt(tf.reduce_mean(tf.square(x), axis=1, keepdims=True) + 1e-8)
+            # Actual normalization
+            x *= tf.rsqrt(tf.reduce_sum(tf.square(x), axis=1, keepdims=True) + 1e-8)
 
 
     # Mapping layers.
@@ -437,6 +439,8 @@ def G_synthesis_stylegan2(
     fused_modconv       = True,         # Implement modulated_conv2d_layer() as a single fused op?
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    CONST_SEED = 777 # hardcoded for now, could migrate this to an arg or environment flag
+
     resolution_log2 = int(np.log2(resolution))
     assert resolution == 2**resolution_log2 and resolution >= 4
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
@@ -491,7 +495,7 @@ def G_synthesis_stylegan2(
     y = None
     with tf.variable_scope('4x4'):
         with tf.variable_scope('Const'):
-            x = tf.get_variable('const', shape=[1, nf(1), 4, 4], initializer=tf.initializers.random_normal(), use_resource=True)
+            x = tf.get_variable('const', shape=[1, nf(1), 4, 4], initializer=tf.initializers.random_normal(CONST_SEED), use_resource=True)
             x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
         with tf.variable_scope('Conv'):
             x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
