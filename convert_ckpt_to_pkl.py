@@ -40,10 +40,12 @@ def main():
     sess = tf.get_default_session()
     saver.restore(sess, ckpt)
 
-    out_pkl_iteration = ckpt.split('ckpt-')[-1]
+    # out_pkl_iteration = ckpt.split('ckpt-')[-1]
+    out_pkl_iteration = 'converted'
     out_pkl = './'+args.prefix+'model.ckpt-'+out_pkl_iteration+'.pkl'
     print('Saving %s' % out_pkl)
     misc.save_pkl((G, D, Gs), out_pkl)
+    
 
 
 if __name__ == '__main__':
