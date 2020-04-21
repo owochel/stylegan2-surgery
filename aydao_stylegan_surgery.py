@@ -74,7 +74,7 @@ def main(args):
     name = filename.replace('.pkl','')
     
     if results_dir != None and results_dir != "None":
-        for i in range(0,10):
+        for i in range(0,100):
             rnd = np.random.RandomState(None)
             latents = rnd.randn(1, Gs.input_shape[1])
             fmt = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
