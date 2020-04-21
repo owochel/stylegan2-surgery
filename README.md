@@ -1,4 +1,12 @@
-![Teaser image](./fake_art_portrait.jpg)
+#StyleGAN2-Surgery
+
+A collection of scripts and convenience modifications for creative media synthesis.
+
+(Except for the collected scripts, this repo is not recommended for general use.)
+
+~~~ aydao ~~~~ 2020 ~~~
+
+pbaylies' README follows:
 
 * Conditional model trained on WikiArt images [now available for download](https://archive.org/details/wikiart-stylegan2-conditional-model)
 * Take a look at the included notebooks for examples
