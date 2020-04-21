@@ -1,10 +1,17 @@
-#StyleGAN2-Surgery
+# StyleGAN2-Surgery
 
 A collection of scripts and convenience modifications for creative media synthesis.
 
-(Except for the collected scripts, this repo is not recommended for general use.)
+* `avg_local.py` Stochastic weight averaging (`swa.py`) relies on modified dnnlib code, this script doesn't, it "just works"
+* `aydao_flesh_digressions.py` Simultaneous circular interpolations in the latent space and constant layer
+* `aydao_stylegan_surgery.py` Experimental operations on the body of a StyleGAN 
+* `convert_ckpt_to_pkl.py` Does what it says on the tin
+* `copy_weights.py` A script for copying the weights from one pkl into another. Quite handy
+* `create_initial_network_pkl.py` Drops a refreshly initialized, untrained StyleGAN pkl of the appropriate size. Also handy
 
-~~~ aydao ~~~~ 2020 ~~~
+(Except for the collected scripts, this repo is *not* recommended for general use.)
+
+aydao | 2020 
 
 pbaylies' README follows:
 
