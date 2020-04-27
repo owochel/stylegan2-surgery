@@ -336,8 +336,8 @@ class Network:
                 print("Not restoring (not present):     {}".format(name))
             elif self.trainables[name].shape != src_net.trainables[name].shape:
                 print("Not restoring (different shape): {}".format(name))
-
-            if name in src_net.trainables and self.trainables[name].shape == src_net.trainables[name].shape:
+            elif name in src_net.trainables and self.trainables[name].shape == src_net.trainables[name].shape:
+                print("Restoring: {}".format(name))
                 names.append(name)
 
         tfutil.set_vars(tfutil.run({self.vars[name]: src_net.vars[name] for name in names}))
