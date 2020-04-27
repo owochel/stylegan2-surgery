@@ -6,14 +6,14 @@ A collection of scripts and convenience modifications for creative media synthes
 * `aydao_flesh_digressions.py` Simultaneous circular interpolations in the latent space and constant layer
 * `aydao_stylegan_surgery.py` Experimental operations on the body of a StyleGAN 
 * `convert_ckpt_to_pkl.py` Does what it says on the tin
-* `copy_weights.py` A script for copying the weights from one pkl into another. Quite handy
-* `create_initial_network_pkl.py` Drops a refreshly initialized, untrained StyleGAN pkl of the appropriate size. Also handy
+* `copy_weights.py` A script for copying the weights from one pkl into another. This can copy weights into larger/smaller models, for example.
+* `create_initial_network_pkl.py` Drops a refreshly initialized, untrained StyleGAN pkl of the appropriate size. You can use this to create a pkl of a desired size, to use in conjunction with `copy_weights.py` as a target pkl 
 
 (Except for the collected scripts, this repo is *not* recommended for general use.)
 
 aydao | 2020 
 
-pbaylies' README follows:
+**pbaylies' README follows:**
 
 * Conditional model trained on WikiArt images [now available for download](https://archive.org/details/wikiart-stylegan2-conditional-model)
 * Take a look at the included notebooks for examples
