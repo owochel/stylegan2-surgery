@@ -2,16 +2,22 @@
 
 A collection of scripts and convenience modifications for creative media synthesis.
 
+Utility scripts:
 * `avg_local.py` Stochastic weight averaging (`swa.py`) relies on modified dnnlib code, this script doesn't, it "just works"
+* `convert_ckpt_to_pkl.py` Does what it says on the tin
+* `copy_weights.py` A script for copying the weights from one pkl into another. You can use this script to copy weights from a trained model into a larger or smaller network, for example. You may want to use the portable version.
+* `copy_weights_portable.py` Same as above, except it should work in your own repo (without dependencies on the custom dnnlib of this fork)
+* `create_initial_network_pkl.py` Drops a refreshly initialized, untrained StyleGAN pkl of the appropriate size. You can use this script to create a pkl of a desired resolution, making it ideal to use in conjunction with `copy_weights.py` as a target pkl 
+
+Art scripts
 * `aydao_flesh_digressions.py` Simultaneous circular interpolations in the latent space and constant layer
 * `aydao_stylegan_surgery.py` Experimental operations on the body of a StyleGAN 
-* `convert_ckpt_to_pkl.py` Does what it says on the tin
-* `copy_weights.py` A script for copying the weights from one pkl into another. You can use this script to copy weights from a trained model into a larger or smaller network, for example.
-* `create_initial_network_pkl.py` Drops a refreshly initialized, untrained StyleGAN pkl of the appropriate size. You can use this script to create a pkl of a desired resolution, making it ideal to use in conjunction with `copy_weights.py` as a target pkl 
 
 (Except for the collected scripts, this repo is *not* recommended for general use.)
 
 aydao | 2020 
+
+---
 
 **pbaylies' README follows:**
 
