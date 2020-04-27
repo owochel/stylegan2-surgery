@@ -436,14 +436,16 @@ def G_synthesis_stylegan2(
     res_log2_h = int(np.log2(resolution_h))
     res_log2_w = int(np.log2(resolution_w))
     
-    assert resolution_h == 2**res_log2_h
-    assert resolution_w == 2**res_log2_w
+    # assert resolution_h == 2**res_log2_h
+    # assert resolution_w == 2**res_log2_w
     
     res_log2_max = max(res_log2_h, res_log2_w)
     
-    # temp for now, restrict dimensions
-    min_h = 4 
-    min_w = 4
+    import fractions
+    frac = fractions.Fraction(resolution_h, resolution_w)
+    ld = frac.limit_denominator()
+    min_h = ld.numerator # fix ratio based on h and w
+    min_w = ld.denominator
     
 
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
@@ -545,9 +547,10 @@ def G_synthesis_stylegan2(
                 y = torgb(x, y, res)
     """
     res_log2_min = int(np.log2(min_h))
-    assert min_h == 2**res_log2_min
+    # assert min_h == 2**res_log2_min
     assert res_log2_min < res_log2_max
-    with tf.variable_scope('%dx%d' % (min_h, min_w)):
+    scope = '%dx%d' % (min_h, min_w)
+    with tf.variable_scope(scope):
         with tf.variable_scope('Const'):
             x = tf.get_variable('const', shape=[1, nf(1), min_h, min_w], initializer=tf.initializers.random_normal())
             x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
@@ -557,7 +560,8 @@ def G_synthesis_stylegan2(
             y = torgb(x, y, res_log2_min)
     # Main layers.
     for res in range(res_log2_min + 1, res_log2_max + 1):
-        with tf.variable_scope('%dx%d' % (2**res,2**res)):
+        scope = '%dx%d' % (min_h * 2**(res-2), min_w * 2**(res-2))
+        with tf.variable_scope(scope):
             x = block(x, res)
             if architecture == 'skip':
                 y = upsample(y)
@@ -696,14 +700,16 @@ def D_stylegan2(
     res_log2_h = int(np.log2(resolution_h))
     res_log2_w = int(np.log2(resolution_w))
     
-    assert resolution_h == 2**res_log2_h
-    assert resolution_w == 2**res_log2_w
+    # assert resolution_h == 2**res_log2_h
+    # assert resolution_w == 2**res_log2_w
     
     res_log2_max = max(res_log2_h, res_log2_w)
     
-    # temp for now, restrict dimensions
-    min_h = 4 
-    min_w = 4
+    import fractions
+    frac = fractions.Fraction(resolution_h, resolution_w)
+    ld = frac.limit_denominator()
+    min_h = ld.numerator # fix ratio based on h and w
+    min_w = ld.denominator
     
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
@@ -755,12 +761,13 @@ def D_stylegan2(
 
     # Main layers.
     res_log2_min = int(np.log2(min_h))
-    assert min_h == 2**res_log2_min
+    # assert min_h == 2**res_log2_min
     assert res_log2_min < res_log2_max
     x = None
     y = images_in
     for res in range(res_log2_max, res_log2_min, -1):
-        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
+        scope = '%dx%d' % (min_h * 2**(res-2), min_w * 2**(res-2))
+        with tf.variable_scope(scope):
             if architecture == 'skip' or res == res_log2_max:
                 x = fromrgb(x, y, res)
             x = block(x, res)
@@ -768,7 +775,8 @@ def D_stylegan2(
                 y = downsample(y)
                 
     # Final layers.
-    with tf.variable_scope('%dx%d' % (min_h, min_w)):
+    scope = '%dx%d' % (min_h, min_w)
+    with tf.variable_scope(scope):
         if architecture == 'skip':
             x = fromrgb(x, y, res_log2_min)
         if mbstd_group_size > 1:

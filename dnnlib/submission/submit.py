@@ -287,9 +287,12 @@ def run_wrapper(submit_config: SubmitConfig) -> None:
         else:
             traceback.print_exc()
 
-            log_src = os.path.join(submit_config.run_dir, "log.txt")
-            log_dst = os.path.join(get_path_from_template(submit_config.run_dir_root), "{0}-error.txt".format(submit_config.run_name))
-            shutil.copyfile(log_src, log_dst)
+            try:
+                log_src = os.path.join(submit_config.run_dir, "log.txt")
+                log_dst = os.path.join(get_path_from_template(submit_config.run_dir_root), "{0}-error.txt".format(submit_config.run_name))
+                shutil.copyfile(log_src, log_dst)
+            except:
+                print("Failing hard, check stack trace")
 
             # Defer sys.exit(1) to happen after we close the logs and create a _finished.txt
             exit_with_errcode = True
