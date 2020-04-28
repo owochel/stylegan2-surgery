@@ -27,18 +27,19 @@ import argparse
 
 # Code for this function is modified from a function embedded in the dnnlib network.py of pbaylies' StyleGAN2 repo
 # Note well that the argument order is target then source  
-def copy_compatible_trainables_from(target_net, src_net) -> None:
+def copy_compatible_trainables_from(dst_net, src_net) -> None:
     """Copy the compatible values of all trainable variables from the given network, including sub-networks"""
     names = []
-    for name in target_net.trainables.keys():
+    for name in dst_net.trainables.keys():
         if name not in src_net.trainables:
             print("Not restoring (not present):     {}".format(name))
-        elif target_net.trainables[name].shape != src_net.trainables[name].shape:
+        elif dst_net.trainables[name].shape != src_net.trainables[name].shape:
             print("Not restoring (different shape): {}".format(name))
-        elif name in src_net.trainables and target_net.trainables[name].shape == src_net.trainables[name].shape:
+        elif name in src_net.trainables and dst_net.trainables[name].shape == src_net.trainables[name].shape:
             print("Restoring: {}".format(name))
             names.append(name)
-    tfutil.set_vars(tfutil.run({target_net.vars[name]: src_net.vars[name] for name in names}))
+            
+    tfutil.set_vars(tfutil.run({dst_net.vars[name]: src_net.vars[name] for name in names}))
 
 def main(args):
 
