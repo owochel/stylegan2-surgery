@@ -21,13 +21,6 @@ import argparse
 
 # Note well that the argument order is target then source  
 def copy_and_crop_trainables_from(target_net, source_net) -> None:
-    for name in target_net.trainables.keys():
-        if name not in source_net.trainables:
-            print("Not restoring (not present):     {}".format(name))
-        elif target_net.trainables[name].shape != source_net.trainables[name].shape:
-            print("Not restoring (different shape): {}".format(name))
-        elif name in source_net.trainables and target_net.trainables[name].shape == source_net.trainables[name].shape:
-            print("Restoring: {}".format(name))
     source_trainables = source_net.trainables.keys()
     target_trainables = target_net.trainables.keys()
     names = [pair for pair in zip(source_trainables, target_trainables)]
