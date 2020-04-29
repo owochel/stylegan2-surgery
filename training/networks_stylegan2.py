@@ -446,6 +446,9 @@ def G_synthesis_stylegan2(
     ld = frac.limit_denominator()
     min_h = ld.numerator # fix ratio based on h and w
     min_w = ld.denominator
+    while (min_h < 4 and min_w < 4):
+        min_h *= 2
+        min_w *= 2
     
 
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
