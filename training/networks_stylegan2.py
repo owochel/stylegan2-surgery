@@ -557,6 +557,9 @@ def G_synthesis_stylegan2(
         with tf.variable_scope('Const'):
             x = tf.get_variable('const', shape=[1, nf(1), min_h, min_w], initializer=tf.initializers.random_normal())
             x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
+        # with tf.variable_scope('Dense0'):
+        #     x = apply_bias_act(dense_layer(dlatents_in[:, 0], fmaps=nf(0)*16), act=act)
+        #     x = tf.reshape(x, [-1, nf(0), 4, 4])
         with tf.variable_scope('Conv'):
             x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
         if architecture == 'skip':
@@ -713,6 +716,9 @@ def D_stylegan2(
     ld = frac.limit_denominator()
     min_h = ld.numerator # fix ratio based on h and w
     min_w = ld.denominator
+    while (min_h < 4 and min_w < 4):
+        min_h *= 2
+        min_w *= 2
     
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
