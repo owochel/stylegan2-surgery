@@ -498,8 +498,10 @@ def G_synthesis_stylegan2(
         #     x = tf.get_variable('const', shape=[1, nf(1), min_h, min_w], initializer=tf.initializers.random_normal())
         #     x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
         with tf.variable_scope('Dense0'):
-            x = apply_bias_act(dense_layer(dlatents_in[:, 0], fmaps=nf(0)*16), act=act)
-            x = tf.reshape(x, [-1, nf(0), 4, 4])
+            x = apply_bias_act(dense_layer(dlatents_in[:, 0], fmaps=nf(0)*4), act=act)
+            x = tf.reshape(x, [-1, nf(0), 2, 2])
+        with tf.variable_scope('Conv0_up'):
+            x = layer(x, layer_idx=0, fmaps=nf(0), kernel=3, up=True)
         with tf.variable_scope('Conv'):
             x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
         if architecture == 'skip':
