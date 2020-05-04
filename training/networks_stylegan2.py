@@ -436,9 +436,6 @@ def G_synthesis_stylegan2(
     res_log2_h = int(np.log2(resolution_h))
     res_log2_w = int(np.log2(resolution_w))
     
-    # assert resolution_h == 2**res_log2_h
-    # assert resolution_w == 2**res_log2_w
-    
     res_log2_max = max(res_log2_h, res_log2_w)
     
     import fractions
@@ -450,7 +447,6 @@ def G_synthesis_stylegan2(
         min_h *= 2
         min_w *= 2
     
-
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
@@ -480,36 +476,16 @@ def G_synthesis_stylegan2(
         return apply_bias_act(x, act=act)
 
     # Building blocks for main layers.
-    """
-    def block(x, res): # res = 3..resolution_log2
-        t = x
-        with tf.variable_scope('Conv0_up'):
-            x = layer(x, layer_idx=res*2-5, fmaps=nf(res-1), kernel=3, up=True)
-        with tf.variable_scope('Conv1'):
-            x = layer(x, layer_idx=res*2-4, fmaps=nf(res-1), kernel=3)
-        if architecture == 'resnet':
-            with tf.variable_scope('Skip'):
-                t = conv2d_layer(t, fmaps=nf(res-1), kernel=1, up=True, resample_kernel=resample_kernel)
-                x = (x + t) * (1 / np.sqrt(2))
-        return x
-    """
     def block(x, res): # res = 3..res_log2
         t = x
         layer_idx = res*2-5
         fmaps_idx = res-1
-        # with tf.variable_scope('Conv0_up'):
-        #     x = layer(x, layer_idx=res*2-1, fmaps=nf(res+1), kernel=3, up=True)
-        # with tf.variable_scope('Conv1'):
-        #     x = layer(x, layer_idx=res*2, fmaps=nf(res+1), kernel=3)
         with tf.variable_scope('Conv0_up'):
             x = layer(x, layer_idx=layer_idx, fmaps=nf(fmaps_idx), kernel=3, up=True)
         with tf.variable_scope('Conv1'):
             x = layer(x, layer_idx=layer_idx+1, fmaps=nf(fmaps_idx), kernel=3)
 
         if architecture == 'resnet':
-            # with tf.variable_scope('Skip'):
-            #     t = conv2d_layer(t, fmaps=nf(res+1), kernel=1, up=True, resample_kernel=resample_kernel)
-            #     x = (x + t) * (1 / np.sqrt(2))
             with tf.variable_scope('Skip'):
                 t = conv2d_layer(t, fmaps=nf(fmaps_idx), kernel=1, up=True, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
@@ -523,32 +499,9 @@ def G_synthesis_stylegan2(
         with tf.variable_scope('ToRGB'):
             t = apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2-3], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
             return t if y is None else y + t
-    """
-    def torgb(x, y, res): # res = 0..res_log2
-        with tf.variable_scope('ToRGB'):
-            t = apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2+1], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
-            return t if y is None else y + t
-    """
 
     # Early layers.
     y = None
-    """
-    with tf.variable_scope('4x4'):
-        with tf.variable_scope('Const'):
-            x = tf.get_variable('const', shape=[1, nf(1), 4, 4], initializer=tf.initializers.random_normal())
-            x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
-        with tf.variable_scope('Conv'):
-            x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
-        if architecture == 'skip':
-            y = torgb(x, y, 2)
-     for res in range(3, resolution_log2 + 1):
-        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
-            x = block(x, res)
-            if architecture == 'skip':
-                y = upsample(y)
-            if architecture == 'skip' or res == resolution_log2:
-                y = torgb(x, y, res)
-    """
     res_log2_min = int(np.log2(min_h))
     # assert min_h == 2**res_log2_min
     assert res_log2_min < res_log2_max
@@ -557,13 +510,11 @@ def G_synthesis_stylegan2(
         with tf.variable_scope('Const'):
             x = tf.get_variable('const', shape=[1, nf(1), min_h, min_w], initializer=tf.initializers.random_normal())
             x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
-        # with tf.variable_scope('Dense0'):
-        #     x = apply_bias_act(dense_layer(dlatents_in[:, 0], fmaps=nf(0)*16), act=act)
-        #     x = tf.reshape(x, [-1, nf(0), 4, 4])
         with tf.variable_scope('Conv'):
             x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
         if architecture == 'skip':
             y = torgb(x, y, res_log2_min)
+
     # Main layers.
     for res in range(res_log2_min + 1, res_log2_max + 1):
         scope = '%dx%d' % (min_h * 2**(res-2), min_w * 2**(res-2))
@@ -702,12 +653,8 @@ def D_stylegan2(
     resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
-    
     res_log2_h = int(np.log2(resolution_h))
     res_log2_w = int(np.log2(resolution_w))
-    
-    # assert resolution_h == 2**res_log2_h
-    # assert resolution_w == 2**res_log2_w
     
     res_log2_max = max(res_log2_h, res_log2_w)
     
@@ -724,7 +671,6 @@ def D_stylegan2(
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
 
-    #images_in.set_shape([None, num_channels, resolution, resolution])
     images_in.set_shape([None, num_channels, resolution_h, resolution_w])
     labels_in.set_shape([None, label_size])
     images_in = tf.cast(images_in, dtype)
@@ -746,23 +692,6 @@ def D_stylegan2(
                 t = conv2d_layer(t, fmaps=nf(res-2), kernel=1, down=True, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
         return x
-    """
-    def fromrgb(x, y, res): # res = 0..res_log2
-        with tf.variable_scope('FromRGB'):
-            t = apply_bias_act(conv2d_layer(y, fmaps=nf(res+1), kernel=1), act=act)
-            return t if x is None else x + t
-    def block(x, res): # res = 0..res_log2
-        t = x
-        with tf.variable_scope('Conv0'):
-            x = apply_bias_act(conv2d_layer(x, fmaps=nf(res+1), kernel=3), act=act)
-        with tf.variable_scope('Conv1_down'):
-            x = apply_bias_act(conv2d_layer(x, fmaps=nf(res), kernel=3, down=True, resample_kernel=resample_kernel), act=act)
-        if architecture == 'resnet':
-            with tf.variable_scope('Skip'):
-                t = conv2d_layer(t, fmaps=nf(res), kernel=1, down=True, resample_kernel=resample_kernel)
-                x = (x + t) * (1 / np.sqrt(2))
-        return x
-    """
 
     def downsample(y):
         with tf.variable_scope('Downsample'):
@@ -770,7 +699,6 @@ def D_stylegan2(
 
     # Main layers.
     res_log2_min = int(np.log2(min_h))
-    # assert min_h == 2**res_log2_min
     assert res_log2_min < res_log2_max
     x = None
     y = images_in
@@ -795,18 +723,7 @@ def D_stylegan2(
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(1), kernel=3), act=act)
         with tf.variable_scope('Dense0'):
             x = apply_bias_act(dense_layer(x, fmaps=nf(0)), act=act)
-    """
-    with tf.variable_scope('%dx%d' % (min_h, min_w)):
-        if architecture == 'skip':
-            x = fromrgb(x, y, 0)
-        if mbstd_group_size > 1:
-            with tf.variable_scope('MinibatchStddev'):
-                x = minibatch_stddev_layer(x, mbstd_group_size, mbstd_num_features)
-        with tf.variable_scope('Conv'):
-            x = apply_bias_act(conv2d_layer(x, fmaps=nf(1), kernel=3), act=act)
-        with tf.variable_scope('Dense0'):
-            x = apply_bias_act(dense_layer(x, fmaps=nf(0)), act=act)
-    """
+            
     # Output layer with label conditioning from "Which Training Methods for GANs do actually Converge?"
     with tf.variable_scope('Output'):
         x = apply_bias_act(dense_layer(x, fmaps=max(labels_in.shape[1], 1)))
