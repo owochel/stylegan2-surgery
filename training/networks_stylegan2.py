@@ -520,6 +520,84 @@ def G_synthesis_stylegan2(
     return tf.identity(images_out, name='images_out')
 
 #----------------------------------------------------------------------------
+# Define a VectorQuantize function
+#   SOURCE: https://github.com/YangNaruto/FQ-GAN
+#   (presumed licensed under the same license as the rest of StyleGAN2)
+
+def VectorQuantizerEMA(inputs, is_training=True, embedding_dim=512,
+             num_embeddings=2**8,
+             decay=0.8, commitment_cost=1.0,
+             epsilon=1e-5,
+                       **_kwargs):
+    _embedding_dim = embedding_dim
+    _num_embeddings = num_embeddings
+    _decay = decay
+    _commitment_cost = commitment_cost
+    _epsilon = epsilon
+
+    # w is a matrix with an embedding in each column. When training, the
+    # embedding is assigned to be the average of all inputs assigned to that
+    # embedding.
+    embedding_shape = [embedding_dim, num_embeddings]
+    _w = tf.get_variable(
+        'embedding', embedding_shape,
+        initializer=tf.variance_scaling_initializer(), use_resource=True)
+    _ema_cluster_size = tf.get_variable(
+        'ema_cluster_size', [num_embeddings],
+        initializer=tf.constant_initializer(0), use_resource=True)
+    _ema_w = tf.get_variable(
+        'ema_dw', initializer=_w.initialized_value(), use_resource=True)
+    inputs.set_shape([None, None, None, embedding_dim])
+
+    def quantize(encoding_indices):
+        with tf.control_dependencies([encoding_indices]):
+            w = tf.transpose(_w.read_value(), [1, 0])
+        return tf.nn.embedding_lookup(w, encoding_indices, validate_indices=False)
+
+    with tf.control_dependencies([inputs]):
+        w = _w.read_value()
+    input_shape = tf.shape(inputs)
+    with tf.control_dependencies([
+        tf.Assert(tf.equal(input_shape[-1], _embedding_dim),
+                  [input_shape])]):
+        flat_inputs = tf.reshape(inputs, [-1, _embedding_dim])
+
+    distances = (tf.reduce_sum(flat_inputs ** 2, 1, keepdims=True)
+                 - 2 * tf.matmul(flat_inputs, w)
+                 + tf.reduce_sum(w ** 2, 0, keepdims=True))
+
+    encoding_indices = tf.argmax(- distances, 1)
+    encodings = tf.one_hot(encoding_indices, _num_embeddings)
+    encoding_indices = tf.reshape(encoding_indices, tf.shape(inputs)[:-1])
+    quantized = quantize(encoding_indices)
+    e_latent_loss = tf.reduce_mean((tf.stop_gradient(quantized) - inputs) ** 2, axis=[1, 2, 3])
+
+    if is_training:
+        updated_ema_cluster_size = moving_averages.assign_moving_average(
+            _ema_cluster_size, tf.reduce_sum(encodings, 0), _decay)
+        dw = tf.matmul(flat_inputs, encodings, transpose_a=True)
+        updated_ema_w = moving_averages.assign_moving_average(_ema_w, dw,
+                                                              _decay)
+        n = tf.reduce_sum(updated_ema_cluster_size)
+        updated_ema_cluster_size = (
+                (updated_ema_cluster_size + _epsilon)
+                / (n + _num_embeddings * _epsilon) * n)
+        # print('here')
+        normalised_updated_ema_w = (
+                updated_ema_w / tf.reshape(updated_ema_cluster_size, [1, -1]))
+        with tf.control_dependencies([e_latent_loss]):
+            update_w = tf.assign(_w, normalised_updated_ema_w)
+            with tf.control_dependencies([update_w]):
+                loss = _commitment_cost * e_latent_loss
+    else:
+        loss = _commitment_cost * e_latent_loss
+    quantized = inputs + tf.stop_gradient(quantized - inputs)
+    avg_probs = tf.reduce_mean(encodings, 0)
+    perplexity = tf.exp(- tf.reduce_sum(avg_probs * tf.log(avg_probs + 1e-10)))
+
+    return loss, perplexity, tf.transpose(quantized, perm=(0, 3, 1, 2))
+
+#----------------------------------------------------------------------------
 # Original StyleGAN discriminator.
 # Used in configs B-D (Table 1).
 
@@ -917,3 +995,118 @@ def non_local_block(x, name, use_sn):
                      use_bias=False)
     return x + sigma * attn_g
 
+#----------------------------------------------------------------------------
+# Quantized Discriminator
+#   SOURCE: https://github.com/YangNaruto/FQ-GAN
+#   (presumed licensed under the same license as the rest of StyleGAN2)
+
+
+def D_stylegan2_quant(
+    images_in,                          # First input: Images [minibatch, channel, height, width].
+    labels_in,                          # Second input: Labels [minibatch, label_size].
+    num_channels        = 3,            # Number of input color channels. Overridden based on dataset.
+    resolution          = 1024,         # Input resolution. Overridden based on dataset.
+    label_size          = 0,            # Dimensionality of the labels, 0 if no labels. Overridden based on dataset.
+    fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
+    fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
+    fmap_min            = 1,            # Minimum number of feature maps in any layer.
+    fmap_max            = 512,          # Maximum number of feature maps in any layer.
+    architecture        = 'resnet',     # Architecture: 'orig', 'skip', 'resnet'.
+    nonlinearity        = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
+    mbstd_group_size    = 4,            # Group size for the minibatch standard deviation layer, 0 = disable.
+    mbstd_num_features  = 1,            # Number of features for the minibatch standard deviation layer.
+    dtype               = 'float32',    # Data type to use for activations and outputs.
+    resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
+    commitment_cost     = 1.0,
+    decay               = 0.8,
+    discrete_layer      = '2',
+    components          = dnnlib.EasyDict(),        # Container for sub-networks. Retained between calls.
+    **_kwargs):                         # Ignore unrecognized keyword args.
+
+    # q_layer = [int(x) for x in discrete_layer]
+    resolution_log2 = int(np.log2(resolution))
+    assert resolution == 2**resolution_log2 and resolution >= 4
+    q_layer = [int(x) for x in discrete_layer]
+    #K = {10:2**4, 9:2**4, 8:2**4, 7:2**5, 6:2**7, 5:2**8, 4:2**9, 3: 2**10}
+    #q_layer = [(resolution_log2-2)//2+2, (resolution_log2-2)//2+3]
+    res_dictsz_mapping = {10: 2**6, 9:2**6, 8:2**6, 7: 2**6, 6:2**7, 5:2**7, 4:2**7, 3:2**7}
+    res_ch_mapping = {10: 2**5, 9:2**6, 8:2**7, 7: 2**8, 6:2**9, 5:2**9, 4:2**9, 3:2**9}
+    def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
+    assert architecture in ['orig', 'skip', 'resnet']
+    act = nonlinearity
+
+    images_in.set_shape([None, num_channels, resolution, resolution])
+    labels_in.set_shape([None, label_size])
+    images_in = tf.cast(images_in, dtype)
+    labels_in = tf.cast(labels_in, dtype)
+
+    for res in q_layer:
+        if 'discrete_mapping_%s'%str(res) not in components:
+            components['discrete_mapping_%s'%str(res)] = tflib.Network('Discrete_mapping_%s'%str(
+                res),  num_embeddings=res_dictsz_mapping[res], decay=decay, embedding_dim=res_ch_mapping[res],
+                                                                       commitment_cost=commitment_cost,
+                                                                       func_name=VectorQuantizerEMA, **_kwargs)
+
+    # Building blocks for main layers.
+    def fromrgb(x, y, res): # res = 2..resolution_log2
+        with tf.variable_scope('FromRGB'):
+            t = apply_bias_act(conv2d_layer(y, fmaps=nf(res-1), kernel=1), act=act)
+            return t if x is None else x + t
+    def block(x, res): # res = 2..resolution_log2
+        t = x
+        with tf.variable_scope('Conv0'):
+            x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-1), kernel=3), act=act)
+        with tf.variable_scope('Conv1_down'):
+            x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-2), kernel=3, down=True, resample_kernel=resample_kernel), act=act)
+        if architecture == 'resnet':
+            with tf.variable_scope('Skip'):
+                t = conv2d_layer(t, fmaps=nf(res-2), kernel=1, down=True, resample_kernel=resample_kernel)
+                x = (x + t) * (1 / np.sqrt(2))
+        return x
+    def downsample(y):
+        with tf.variable_scope('Downsample'):
+            return downsample_2d(y, k=resample_kernel)
+
+    # Main layers.
+    x = None
+    y = images_in
+    quant_loss = 0
+    for res in range(resolution_log2, 2, -1):
+        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
+            if architecture == 'skip' or res == resolution_log2:
+                x = fromrgb(x, y, res)
+            x = block(x, res)
+        if res in q_layer:
+            diff, ppl, quantized = components['discrete_mapping_%s'%str(res)].get_output_for(
+                tf.transpose(x,
+                                                                                           perm=(0, 2, 3, 1)), is_training=True)
+            quant_loss += diff
+
+            if architecture == 'skip':
+                y = downsample(y)
+
+    # Final layers.
+    with tf.variable_scope('4x4'):
+        if architecture == 'skip':
+            x = fromrgb(x, y, 2)
+        if mbstd_group_size > 1:
+            with tf.variable_scope('MinibatchStddev'):
+                x = minibatch_stddev_layer(x, mbstd_group_size, mbstd_num_features)
+        with tf.variable_scope('Conv'):
+            x = apply_bias_act(conv2d_layer(x, fmaps=nf(1), kernel=3), act=act)
+        with tf.variable_scope('Dense0'):
+            x = apply_bias_act(dense_layer(x, fmaps=nf(0)), act=act)
+
+    # Output layer with label conditioning from "Which Training Methods for GANs do actually Converge?"
+    with tf.variable_scope('Output'):
+        x = apply_bias_act(dense_layer(x, fmaps=max(labels_in.shape[1], 1)))
+        if labels_in.shape[1] > 0:
+            x = tf.reduce_sum(x * labels_in, axis=1, keepdims=True)
+    scores_out = x
+
+    # Output.
+    assert scores_out.dtype == tf.as_dtype(dtype)
+    scores_out = tf.identity(scores_out, name='scores_out')
+    return scores_out, quant_loss, ppl
+
+#----------------------------------------------------------------------------
