@@ -15,6 +15,7 @@ from dnnlib.tflib.ops.upfirdn_2d import upsample_2d, downsample_2d, upsample_con
 from dnnlib.tflib.ops.fused_bias_act import fused_bias_act
 import functools
 from dnnlib.tflib.autosummary import autosummary, autoimages
+from tensorflow.python.training import moving_averages
 
 # NOTE: Do not import any application-specific modules here!
 # Specify all network parameters as kwargs.
