@@ -502,7 +502,7 @@ def G_synthesis_stylegan2(
 
     # Early layers.
     y = None
-    res_log2_min = int(np.log2(min_h))
+    res_log2_min = int(np.log2(max(min_h,min_w)))
     # assert min_h == 2**res_log2_min
     assert res_log2_min < res_log2_max
     scope = '%dx%d' % (min_h, min_w)
@@ -698,7 +698,7 @@ def D_stylegan2(
             return downsample_2d(y, k=resample_kernel)
 
     # Main layers.
-    res_log2_min = int(np.log2(min_h))
+    res_log2_min = int(np.log2(max(min_h,min_w)))
     assert res_log2_min < res_log2_max
     x = None
     y = images_in
