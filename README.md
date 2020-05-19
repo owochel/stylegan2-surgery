@@ -8,6 +8,7 @@ Utility scripts:
 * `convert_pkl_to_ckpt.py` Converts a pkl to a ckpt (warning: possibly not fully debugged for all use cases)
 * `copy_weights.py` A script for copying the weights from one pkl into another. You can use this script to copy weights from a trained model into a larger or smaller network, for example. You may want to use the portable version.
 * `copy_weights_portable.py` Same as above, except it should work in your own repo (without dependencies on the custom dnnlib of this fork)
+* `copy_crop_weights.py` Copies and crops the weight tensors of a network into another network, such as one with a smaller width or a smaller height. You can use this to copy/crop from the 1024x1024 FFHQ pkl down into a 512x1024 pkl, for example. Note: both the source and target networks must have the same number of layers (you cannot copy/crop from 1024x1024 into 512x512). *Highly experimental, not fully tested.*
 * `create_initial_network_pkl.py` Drops a refreshly initialized, untrained StyleGAN pkl of the appropriate size. You can use this script to create a pkl of a desired resolution, making it ideal to use in conjunction with `copy_weights.py` as a target pkl 
 
 Art scripts
