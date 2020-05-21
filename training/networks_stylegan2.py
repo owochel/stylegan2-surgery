@@ -527,7 +527,7 @@ def G_synthesis_stylegan2(
                 y = torgb(x, y, res)
             # special case block at 64
             if 2**res == 64:
-                x = special_base_block(x, res)
+                x = special_case_block(x, res)
                 # y should already have been upsampled by this point
                 if architecture == 'skip' or res == resolution_log2:
                     y = torgb(x, y, res)
