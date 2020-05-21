@@ -502,6 +502,11 @@ def G_synthesis_stylegan2(
                 t = conv2d_layer(t, fmaps=nf(res-1), kernel=1, up=True, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
         return x
+    def special_case_torgb(x, y, res): # res = 2..resolution_log2
+        with tf.variable_scope('ToRGB2'):
+            t = apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2-3], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
+            t = graph_images(t, res=2**res)
+            return t if y is None else y + t
 
     # Early layers.
     y = None
@@ -530,7 +535,7 @@ def G_synthesis_stylegan2(
                 x = special_case_block(x, res)
                 # y should already have been upsampled by this point
                 if architecture == 'skip' or res == resolution_log2:
-                    y = torgb(x, y, res)
+                    y = special_case_torgb(x, y, res)
     images_out = y
 
     assert images_out.dtype == tf.as_dtype(dtype)
