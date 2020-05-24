@@ -476,6 +476,9 @@ def G_synthesis_stylegan2(
         t = x
         with tf.variable_scope('Conv0_up'):
             x = layer(x, layer_idx=res*2-5, fmaps=nf(res-1), kernel=3, up=True)
+        if use_selfattention(res):
+            print('Adding self-attention block to generator')
+            x = non_local_block(x, "SelfAtten", use_sn=True)
         with tf.variable_scope('Conv1'):
             x = layer(x, layer_idx=res*2-4, fmaps=nf(res-1), kernel=3)
         if architecture == 'resnet':
@@ -507,9 +510,6 @@ def G_synthesis_stylegan2(
     for res in range(3, resolution_log2 + 1):
         with tf.variable_scope('%dx%d' % (2**res, 2**res)):
             x = block(x, res)
-            if 2**res == 64 and False:
-                print('Adding self-attention block to generator')
-                x = non_local_block(x, "SelfAtten", use_sn=True)
             if architecture == 'skip':
                 y = upsample(y)
             if architecture == 'skip' or res == resolution_log2:
@@ -663,6 +663,9 @@ def D_stylegan2(
         t = x
         with tf.variable_scope('Conv0'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-1), kernel=3), act=act)
+        if use_selfattention(res):
+            print('Adding self-attention block to discriminator')
+            x = non_local_block(x, "SelfAtten", use_sn=True)
         with tf.variable_scope('Conv1_down'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-2), kernel=3, down=True, resample_kernel=resample_kernel), act=act)
         if architecture == 'resnet':
@@ -681,9 +684,6 @@ def D_stylegan2(
         with tf.variable_scope('%dx%d' % (2**res, 2**res)):
             if architecture == 'skip' or res == resolution_log2:
                 x = fromrgb(x, y, res)
-            if 2**res == 64 and False:
-                print('Adding self-attention block to discriminator')
-                x = non_local_block(x, "SelfAtten", use_sn=True)
             x = block(x, res)
             if architecture == 'skip':
                 y = downsample(y)
@@ -920,3 +920,5 @@ def non_local_block(x, name, use_sn):
     out = _o(out)
     return out
 
+def use_selfattention(res):
+    return 2**res == 64
