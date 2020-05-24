@@ -886,6 +886,7 @@ def non_local_block(x, name, use_sn):
     return tf.reshape(inputs, (-1, shape[1] * shape[2], shape[3]))
 
   with tf.variable_scope(name):
+    x = _i(x)
     h, w, num_channels = x.get_shape().as_list()[1:]
     num_channels_attn = num_channels // 8
     num_channels_g = num_channels // 2
@@ -915,5 +916,7 @@ def non_local_block(x, name, use_sn):
     sigma = tf.get_variable("sigma", [], initializer=tf.zeros_initializer(), use_resource=True)
     attn_g = conv1x1(attn_g, num_channels, name="conv2d_attn_g", use_sn=use_sn,
                      use_bias=False)
-    return x + sigma * attn_g
+    out = x + sigma * attn_g
+    out = _o(out)
+    return out
 
