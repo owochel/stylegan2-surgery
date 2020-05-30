@@ -16,7 +16,7 @@ import time
 import dnnlib
 import dnnlib.tflib as tflib
 import traceback
-from dnnlib.tflib.autosummary import autosummary
+from dnnlib.tflib.autosummary import autosummary, get_tpu_summary, set_num_replicas
 
 from training import dataset
 from training import misc
@@ -157,11 +157,8 @@ def get_input_fn(load_training_set, num_cores, mirror_augment, drange_net):
     self = training_set = load_training_set(batch_size=0)
 
     def input_fn(params):
-        batch_size = params["batch_size"]
-        #import pdb; pdb.set_trace()
-    
-        #num_channels = tfr_shape[0]
-        #resolution = tfr_shape[1]
+        batch_size = params["batch_size"]\
+        set_num_replicas(params["context"].num_replicas if "context" in params else 1)
         num_channels = training_set.shape[0]
         resolution = training_set.shape[1]
         resolution_log2 = int(np.log2(resolution))
@@ -176,104 +173,43 @@ def get_input_fn(load_training_set, num_cores, mirror_augment, drange_net):
             lod_index = tfr_lod
         assert lod_index >= 0
 
-        #num_cores = batch_size
-        if False:
-            training_set.finalize()
-            label_size = training_set.label_size
-            dset = training_set._tf_datasets[lod_index]
-            dset = dset.batch(batch_size)
+        dset = tf.data.Dataset.from_tensor_slices(tfr_files)
+        dset = dset.apply(tf.data.experimental.parallel_interleave(tf.data.TFRecordDataset, cycle_length=4, sloppy=True))
 
-            def dataset_parser_dynamic(features, labels):
-                features, labels = process_reals(features, labels, lod=0.0, mirror_augment=mirror_augment, drange_data=training_set.dynamic_range, drange_net=drange_net)
-                return features, labels
-
-            if False:
-                dset = dset.apply(
-                    tf.contrib.data.map_and_batch(
-                        dataset_parser_dynamic,
-                        batch_size=batch_size,
-                        num_parallel_batches=tf.data.experimental.AUTOTUNE,
-                        drop_remainder=True))
-            else:
-                dset = dset.map(
-                        dataset_parser_dynamic,
-                        num_parallel_calls=tf.data.experimental.AUTOTUNE)
-
-            # Assign static batch size dimension
-            dset = dset.map(functools.partial(set_shapes, batch_size, num_channels, resolution, label_size))
-            return dset
-        elif True:
-            #dset = training_set._tf_datasets[0]
-            #dset = tf.data.TFRecordDataset(tfr_file, compression_type='', buffer_size=buffer_mb << 20)
-            dset = tf.data.Dataset.from_tensor_slices(tfr_files)
-            dset = dset.apply(tf.data.experimental.parallel_interleave(tf.data.TFRecordDataset, cycle_length=4, sloppy=True))
-
-            if training_set.label_file is not None:
-                training_set._tf_labels_var, training_set._tf_labels_init = tflib.create_var_with_large_initial_value2(training_set._np_labels, name='labels_var', trainable=False)
-                with tf.control_dependencies([training_set._tf_labels_init]):
-                    training_set._tf_labels_dataset = tf.data.Dataset.from_tensor_slices(training_set._tf_labels_var)
-            else:
-                training_set._tf_labels_dataset = tf.data.Dataset.from_tensor_slices(training_set._np_labels)
-
-            dset = dset.map(dataset.TFRecordDataset.parse_tfrecord_tf, num_parallel_calls=2)
-            dset = tf.data.Dataset.zip((dset, training_set._tf_labels_dataset))
-
-            shuffle_mb = 4096  # Shuffle data within specified window (megabytes), 0 = disable shuffling.
-            prefetch_mb = 2048  # Amount of data to prefetch (megabytes), 0 = disable prefetching.
-
-            tfr_shape = (resolution, resolution, 3)
-            bytes_per_item = np.prod(tfr_shape) * np.dtype(training_set.dtype).itemsize
-            if shuffle_mb > 0:
-                dset = dset.shuffle(((shuffle_mb << 20) - 1) // bytes_per_item + 1)
-            repeat = True
-            if repeat:
-                dset = dset.repeat()
-            if prefetch_mb > 0:
-                dset = dset.prefetch(((prefetch_mb << 20) - 1) // bytes_per_item + 1)
-            dset = dset.batch(batch_size)
-            #dset = tf.data.TFRecordDataset(tfr_file)
-
-            def dataset_parser_dynamic(features, labels):
-                #features, labels = set_shapes(batch_size, num_channels, resolution, label_size, features, labels)
-                #features, labels = set_shapes(None, num_channels, resolution, label_size, features, labels)
-                features, labels = process_reals(features, labels, lod=0.0, mirror_augment=mirror_augment, drange_data=training_set.dynamic_range, drange_net=drange_net)
-                #features = tf.cast(features, tf.float32)
-                return features, labels
-
-            #import pdb; pdb.set_trace()
-            if False:
-                dset = dset.apply(
-                    tf.contrib.data.map_and_batch(
-                        dataset_parser_dynamic,
-                        batch_size=batch_size,
-                        num_parallel_batches=tf.data.experimental.AUTOTUNE,
-                        drop_remainder=True))
-            else:
-                dset = dset.map(
-                        dataset_parser_dynamic,
-                        num_parallel_calls=tf.data.experimental.AUTOTUNE)
-            #import pdb; pdb.set_trace()
-
-            # Assign static batch size dimension
-            dset = dset.map(functools.partial(set_shapes, batch_size, num_channels, resolution, label_size))
-            #import pdb; pdb.set_trace()
-
-            # Prefetch overlaps in-feed with training
-            #if self.prefetch_depth_auto_tune:
-            if False:
-                if True:
-                    dset = dset.prefetch(tf.contrib.data.AUTOTUNE)
-                else:
-                    dset = dset.prefetch(4)
+        if training_set.label_file is not None:
+            training_set._tf_labels_var, training_set._tf_labels_init = tflib.create_var_with_large_initial_value2(training_set._np_labels, name='labels_var', trainable=False)
+            with tf.control_dependencies([training_set._tf_labels_init]):
+                training_set._tf_labels_dataset = tf.data.Dataset.from_tensor_slices(training_set._tf_labels_var)
         else:
-            #training_set.configure(batch_size)
-            features, labels = training_set.get_minibatch_tf()
-            features.set_shape((batch_size, num_channels, resolution, resolution))
-            labels.set_shape((batch_size, label_size))
-            features = tf.cast(features, dtype=tf.float32)
-            labels = tf.cast(labels, dtype=tf.float32)
-            dset = tf.data.Dataset.from_tensor_slices((features, labels))
-            dset = dset.repeat().batch(batch_size, drop_remainder=True)
+            training_set._tf_labels_dataset = tf.data.Dataset.from_tensor_slices(training_set._np_labels)
+
+        dset = dset.map(dataset.TFRecordDataset.parse_tfrecord_tf, num_parallel_calls=2)
+        dset = tf.data.Dataset.zip((dset, training_set._tf_labels_dataset))
+
+        shuffle_mb = 4096  # Shuffle data within specified window (megabytes), 0 = disable shuffling.
+        prefetch_mb = 2048  # Amount of data to prefetch (megabytes), 0 = disable prefetching.
+
+        tfr_shape = (resolution, resolution, 3)
+        bytes_per_item = np.prod(tfr_shape) * np.dtype(training_set.dtype).itemsize
+        if shuffle_mb > 0:
+            dset = dset.shuffle(((shuffle_mb << 20) - 1) // bytes_per_item + 1)
+        repeat = True
+        if repeat:
+            dset = dset.repeat()
+        if prefetch_mb > 0:
+            dset = dset.prefetch(((prefetch_mb << 20) - 1) // bytes_per_item + 1)
+        dset = dset.batch(batch_size)
+
+        def dataset_parser_dynamic(features, labels):
+            features, labels = process_reals(features, labels, lod=0.0, mirror_augment=mirror_augment, drange_data=training_set.dynamic_range, drange_net=drange_net)
+            return features, labels
+
+        dset = dset.map(
+                dataset_parser_dynamic,
+                num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        # Assign static batch size dimension
+        dset = dset.map(functools.partial(set_shapes, batch_size, num_channels, resolution, label_size))
+
         return dset
     return input_fn, training_set
 
@@ -385,36 +321,26 @@ def training_loop(
         G_train_op = G_opt._shared_optimizers[''].minimize(G_loss_op, var_list=G_gpu.trainables)
         D_train_op = D_opt._shared_optimizers[''].minimize(D_loss_op, var_list=D_gpu.trainables)
         if lazy_regularization:
-            if False:
-                G_reg_train_op = tf.cond(
-                    lambda: tf.cast(tf.mod(tf.train.get_global_step(), G_reg_interval), tf.bool),
-                    lambda: G_reg_opt._shared_optimizers[''].minimize(G_reg_loss, var_list=G_gpu.trainables),
-                    lambda: tf.no_op()) if G_reg_loss is not None else tf.no_op()
-                D_reg_train_op = tf.cond(
-                    lambda: tf.cast(tf.mod(tf.train.get_global_step(), D_reg_interval), tf.bool),
-                    lambda: D_reg_opt._shared_optimizers[''].minimize(D_reg_loss, var_list=D_gpu.trainables),
-                    lambda: tf.no_op()) if D_reg_loss is not None else tf.no_op()
-            else:
-                assert (G_reg is not None)
-                assert (D_reg is not None)
-                def G_fn():
-                    with tf.control_dependencies([tf.train.get_or_create_global_step()]):
-                        G_op = G_reg_opt._shared_optimizers[''].minimize(G_reg_loss, var_list=G_gpu.trainables)
-                        return G_op
-                def D_fn():
-                    with tf.control_dependencies([tf.train.get_or_create_global_step()]):
-                        D_op = D_reg_opt._shared_optimizers[''].minimize(D_reg_loss, var_list=D_gpu.trainables)
-                        return D_op
-                def G_else():
-                    with tf.control_dependencies([tf.train.get_or_create_global_step()]):
-                        return tf.no_op()
-                def D_else():
-                    with tf.control_dependencies([tf.train.get_or_create_global_step()]):
-                        return tf.no_op()
-                #G_reg_train_op = tf.cond(lambda: tf.equal(tf.cast(tf.mod(tf.cast(tf.train.get_or_create_global_step(), tf.int32), tf.cast(G_reg_interval, tf.int32)), tf.int32), tf.constant(0, tf.int32)), G_fn, G_else)
-                #D_reg_train_op = tf.cond(lambda: tf.equal(tf.cast(tf.mod(tf.cast(tf.train.get_or_create_global_step(), tf.int32), tf.cast(D_reg_interval, tf.int32)), tf.int32), tf.constant(0, tf.int32)), D_fn, D_else)
-                G_reg_train_op = tf.cond(lambda: tf.equal(tf.mod(tf.train.get_or_create_global_step(), G_reg_interval), tf.constant(0, tf.int64)), G_fn, G_else)
-                D_reg_train_op = tf.cond(lambda: tf.equal(tf.mod(tf.train.get_or_create_global_step(), D_reg_interval), tf.constant(0, tf.int64)), D_fn, D_else)
+            assert (G_reg is not None)
+            assert (D_reg is not None)
+            def G_fn():
+                with tf.control_dependencies([tf.train.get_or_create_global_step()]):
+                    G_op = G_reg_opt._shared_optimizers[''].minimize(G_reg_loss, var_list=G_gpu.trainables)
+                    return G_op
+            def D_fn():
+                with tf.control_dependencies([tf.train.get_or_create_global_step()]):
+                    D_op = D_reg_opt._shared_optimizers[''].minimize(D_reg_loss, var_list=D_gpu.trainables)
+                    return D_op
+            def G_else():
+                with tf.control_dependencies([tf.train.get_or_create_global_step()]):
+                    return tf.no_op()
+            def D_else():
+                with tf.control_dependencies([tf.train.get_or_create_global_step()]):
+                    return tf.no_op()
+            #G_reg_train_op = tf.cond(lambda: tf.equal(tf.cast(tf.mod(tf.cast(tf.train.get_or_create_global_step(), tf.int32), tf.cast(G_reg_interval, tf.int32)), tf.int32), tf.constant(0, tf.int32)), G_fn, G_else)
+            #D_reg_train_op = tf.cond(lambda: tf.equal(tf.cast(tf.mod(tf.cast(tf.train.get_or_create_global_step(), tf.int32), tf.cast(D_reg_interval, tf.int32)), tf.int32), tf.constant(0, tf.int32)), D_fn, D_else)
+            G_reg_train_op = tf.cond(lambda: tf.equal(tf.mod(tf.train.get_or_create_global_step(), G_reg_interval), tf.constant(0, tf.int64)), G_fn, G_else)
+            D_reg_train_op = tf.cond(lambda: tf.equal(tf.mod(tf.train.get_or_create_global_step(), D_reg_interval), tf.constant(0, tf.int64)), D_fn, D_else)
         else:
             G_reg_train_op = G_reg_opt._shared_optimizers[''].minimize(G_reg_loss, var_list=G_gpu.trainables) if G_reg_loss is not None else tf.no_op()
             D_reg_train_op = D_reg_opt._shared_optimizers[''].minimize(D_reg_loss, var_list=D_gpu.trainables) if D_reg_loss is not None else tf.no_op()
@@ -490,8 +416,6 @@ def training_loop(
     G.print_layers(); D.print_layers()
     sched = training_schedule(cur_nimg=total_kimg*1000, training_set=training_set, **sched_args)
     grid_latents = np.random.randn(np.prod(grid_size), *G.input_shape[1:])
-    #grid_fakes = Gs.run(grid_latents, grid_labels, is_validation=True, randomize_noise=False, minibatch_size=sched.minibatch_gpu)
-    #misc.save_image_grid(grid_fakes, dnnlib.make_run_dir_path('fakes_init.png'), drange=drange_net, grid_size=grid_size)
 
     def save_image_grid(latents, grid_size, filename):
         grid_fakes = Gs.run(latents, grid_labels, is_validation=True, randomize_noise=False, minibatch_size=sched.minibatch_gpu)
@@ -569,21 +493,12 @@ def training_loop(
             me.D_final = tflex.defer(D_final, dependencies=[prev.D_final] if prev else [])
     print('Making generators...')
     tflex.parallelize_verbose("Generator", range(num_gpus), make_generator, synchronous=True)
-    if False:
-        print('Finalizing clones...')
-        def make_shadow(gpu):
-            me = get_shard(gpu)
-            me.G_final.join()
-            me.D_final.join()
-        tflex.parallelize_verbose("Finalize clone", range(num_gpus), make_shadow, synchronous=False)
 
     def make_shard(gpu):
         nonlocal data_fetch_ops
         me = get_shard(gpu)
         with tf.name_scope('GPU%d' % gpu), tflex.device('/gpu:%d' % gpu):
             # Create GPU-specific shadow copies of G and D.
-            #G_gpu = G if gpu == 0 else G.clone(G.name + '_shadow')
-            #D_gpu = D if gpu == 0 else D.clone(D.name + '_shadow')
             G_gpu = me.G
             D_gpu = me.D
             me.G_final.join()
@@ -698,13 +613,11 @@ def training_loop(
             # Fast path without gradient accumulation.
             if len(rounds) == 1:
                 if tflex.state.noisy: print('G_train_op', 'fast path')
-                #tflib.run([G_train_op, data_fetch_op], feed_dict)
                 tflib.run(G_train_op, feed_dict)
                 tflib.run(data_fetch_op, feed_dict)
                 if run_G_reg:
                     tflib.run(G_reg_op, feed_dict)
                 if tflex.state.noisy: print('D_train_op', 'fast path')
-                #tflib.run([D_train_op, Gs_update_op], feed_dict)
                 tflib.run(D_train_op, feed_dict)
                 tflib.run(Gs_update_op, feed_dict)
                 if run_D_reg:
