@@ -74,6 +74,136 @@ def _create_var(name: str, value_expr: TfExpression) -> TfExpression:
         _vars[name] = [var]
     return update_op
 
+import os
+from . import tpu_summaries
+
+tpu_summary = None
+
+def get_tpu_summary(model_dir=None):
+    global tpu_summary
+    if tpu_summary is None:
+        if model_dir is None:
+            model_dir = os.path.join(os.environ['MODEL_DIR'], 'autosummary')
+        tpu_summary = tpu_summaries.TpuSummaries(model_dir)
+    else:
+        assert model_dir is None
+    return tpu_summary
+
+# TODO(joelshor): Make this a special case of `image_reshaper`.
+def image_grid(input_tensor, grid_shape, image_shape=(32, 32), num_channels=3):
+  """Arrange a minibatch of images into a grid to form a single image.
+
+  Args:
+    input_tensor: Tensor. Minibatch of images to format, either 4D
+        ([batch size, height, width, num_channels]) or flattened
+        ([batch size, height * width * num_channels]).
+    grid_shape: Sequence of int. The shape of the image grid,
+        formatted as [grid_height, grid_width].
+    image_shape: Sequence of int. The shape of a single image,
+        formatted as [image_height, image_width].
+    num_channels: int. The number of channels in an image.
+
+  Returns:
+    Tensor representing a single image in which the input images have been
+    arranged into a grid.
+
+  Raises:
+    ValueError: The grid shape and minibatch size don't match, or the image
+        shape and number of channels are incompatible with the input tensor.
+  """
+  if grid_shape[0] * grid_shape[1] != int(input_tensor.shape[0]):
+    raise ValueError("Grid shape %s incompatible with minibatch size %i." %
+                     (grid_shape, int(input_tensor.shape[0])))
+  if len(input_tensor.shape) == 2:
+    num_features = image_shape[0] * image_shape[1] * num_channels
+    if int(input_tensor.shape[1]) != num_features:
+      raise ValueError("Image shape and number of channels incompatible with "
+                       "input tensor.")
+  elif len(input_tensor.shape) == 4:
+    if (int(input_tensor.shape[1]) != image_shape[0] or
+        int(input_tensor.shape[2]) != image_shape[1] or
+        int(input_tensor.shape[3]) != num_channels):
+      raise ValueError("Image shape and number of channels incompatible with "
+                       "input tensor. %s vs %s" % (
+                           input_tensor.shape, (image_shape[0], image_shape[1],
+                                                num_channels)))
+  else:
+    raise ValueError("Unrecognized input tensor format.")
+  height, width = grid_shape[0] * image_shape[0], grid_shape[1] * image_shape[1]
+  input_tensor = tf.reshape(
+      input_tensor, tuple(grid_shape) + tuple(image_shape) + (num_channels,))
+  input_tensor = tf.transpose(a=input_tensor, perm=[0, 1, 3, 2, 4])
+  input_tensor = tf.reshape(
+      input_tensor, [grid_shape[0], width, image_shape[0], num_channels])
+  input_tensor = tf.transpose(a=input_tensor, perm=[0, 2, 1, 3])
+  input_tensor = tf.reshape(input_tensor, [1, height, width, num_channels])
+  return input_tensor
+
+num_replicas = None
+
+def get_num_replicas():
+    assert num_replicas is not None
+    return num_replicas
+
+def set_num_replicas(n):
+    global num_replicas
+    num_replicas = n
+
+def _i(x): return tf.transpose(x, [0, 2, 3, 1])
+def _o(x): return tf.transpose(x, [0, 3, 1, 2])
+
+def autoimages(summary_name, images, grid_shape=None, res=None):
+    """Called from model_fn() to add a grid of images as summary."""
+    # convert from [batch, channels, width, height] to [batch, width, height, channels]
+    images = _i(images)
+    # All summary tensors are synced to host 0 on every step. To avoid sending
+    # more images then needed we transfer at most `sampler_per_replica` to
+    # create a 8x8 image grid.
+    batch_size_per_replica = images.shape[0].value
+    num_replicas = get_num_replicas()
+    total_num_images = batch_size_per_replica * num_replicas
+    if callable(grid_shape):
+        grid_shape = grid_shape(total_num_images)
+    if grid_shape is None:
+        w = int(os.environ['GRID_WIDTH']) if 'GRID_WIDTH' in os.environ else 3
+        h = int(os.environ['GRID_HEIGHT']) if 'GRID_HEIGHT' in os.environ else 3
+        grid_shape = (w, h)
+    sample_num_images = np.prod(grid_shape)
+    if total_num_images >= sample_num_images:
+        # This can be more than 64. We slice all_images below.
+        samples_per_replica = int(np.ceil(sample_num_images / num_replicas))
+    else:
+        samples_per_replica = batch_size_per_replica
+    if res is None:
+        res = int(os.environ['RESOLUTION']) if 'RESOLUTION' in os.environ else 64
+    num_channels = int(os.environ["NUM_CHANNELS"]) if "NUM_CHANNELS" in os.environ else 3
+    image_shape = [res, res, num_channels]
+    sample_res = int(os.environ['GRID_RESOLUTION']) if 'GRID_RESOLUTION' in os.environ else 200
+    sample_shape = [sample_res, sample_res, num_channels]
+    tf.logging.info("autoimages(%s, %s): Creating %dx%d images grid at resolution %dx%d channel count %d across %d replicas",
+                    repr(summary_name), repr(images),
+                    grid_shape[0], grid_shape[1], image_shape[0], image_shape[1], image_shape[2],
+                    num_replicas)
+    images = images[:samples_per_replica]
+
+    def _merge_images_to_grid(all_images):
+        all_images = all_images[:np.prod(grid_shape)]
+        shape = image_shape
+        if shape[0] > sample_shape[0] or shape[1] > sample_shape[1]:
+            tf.logging.info('autoimages(%s, %s): Downscaling sampled images from %dx%d to %dx%d',
+                            repr(summary_name), repr(all_images),
+                            shape[0], shape[1],
+                            sample_shape[0], sample_shape[1])
+            all_images = tf.image.resize(all_images, sample_shape[0:2], method=tf.image.ResizeMethod.AREA)
+            shape = sample_shape
+        return image_grid(
+            all_images,
+            grid_shape=grid_shape,
+            image_shape=shape[:2],
+            num_channels=shape[2])
+    get_tpu_summary().image(summary_name,
+                            images,
+                            reduce_fn=_merge_images_to_grid)
 
 def autosummary(name: str, value: TfExpressionEx, passthru: TfExpressionEx = None, condition: TfExpressionEx = True) -> TfExpressionEx:
     """Create a new autosummary.
@@ -92,6 +222,8 @@ def autosummary(name: str, value: TfExpressionEx, passthru: TfExpressionEx = Non
     with tf.control_dependencies([autosummary('l2loss', loss)]):
         n = tf.identity(n)
     """
+    tf.logging.info('autosummary(%s, %s)', repr(name), repr(value))
+    get_tpu_summary().scalar(name, value)
     return value
     tfutil.assert_tf_initialized()
     name_id = name.replace("/", "_")

@@ -13,6 +13,7 @@ import dnnlib.tflib as tflib
 from dnnlib.tflib.ops.upfirdn_2d import upsample_2d, downsample_2d, upsample_conv_2d, conv_downsample_2d
 from dnnlib.tflib.ops.fused_bias_act import fused_bias_act
 import functools
+from dnnlib.tflib.autosummary import autosummary, autoimages
 
 # NOTE: Do not import any application-specific modules here!
 # Specify all network parameters as kwargs.
@@ -483,6 +484,7 @@ def G_synthesis_stylegan2(
     def torgb(x, y, res): # res = 2..resolution_log2
         with tf.variable_scope('ToRGB'):
             t = apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2-3], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
+            t = graph_images(t, res=2**res)
             return t if y is None else y + t
 
     # Early layers.
@@ -885,3 +887,31 @@ def non_local_block(x, name, use_sn):
                      use_bias=False)
     return x + sigma * attn_g
 
+def graph_name(name):
+  name = name.split(':')[0]
+  name = name.split('/strided_slice_')[0]
+  name = name.split('/Identity_')[0]
+  if name.startswith('D_loss/G/G_synthesis/'):
+    name = name.replace('D_loss/G/G_synthesis/', '')
+    return 'G_' + name
+  elif name.startswith('D_loss/D/'):
+    name = name.replace('D_loss/D/', '')
+    return 'D_' + name
+
+def graph_spectral_norm(w):
+  value = spectral_norm(w, return_normalized=False)[1][0][0]
+  name = graph_name(value.name)
+  if name is not None:
+    autosummary('specnorm_' + name, value)
+  else:
+    tf.logging.info('ignoring autosummary(%s, %s)', repr(name), repr(value))
+  return w
+
+def graph_images(images, res):
+    value = tf.identity(images)
+    name = graph_name(value.name)
+    if name is not None:
+      autoimages(name, value, res=res)
+    else:
+      tf.logging.info('ignoring autoimages(%s, %s)', repr(name), repr(value))
+    return images

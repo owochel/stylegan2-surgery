@@ -9,7 +9,7 @@
 import numpy as np
 import tensorflow as tf
 import dnnlib.tflib as tflib
-from dnnlib.tflib.autosummary import autosummary
+from dnnlib.tflib.autosummary import autosummary, autoimages
 
 #----------------------------------------------------------------------------
 # Logistic loss from the paper
@@ -65,6 +65,10 @@ def D_logistic_r1(G, D, opt, training_set, minibatch_size, reals, labels, gamma=
         gradient_penalty = tf.reduce_sum(tf.square(real_grads), axis=[1,2,3])
         gradient_penalty = autosummary('Loss/gradient_penalty', gradient_penalty)
         reg = gradient_penalty * (gamma * 0.5)
+        
+    autosummary('D_logistic_r1_03/total_loss', loss + reg)
+    autoimages('D_logistic_r1/images/real', reals)
+    autoimages('D_logistic_r1/images/fake', fake_images_out)
     return loss, reg
 
 def D_logistic_r2(G, D, opt, training_set, minibatch_size, reals, labels, gamma=10.0):
@@ -83,6 +87,10 @@ def D_logistic_r2(G, D, opt, training_set, minibatch_size, reals, labels, gamma=
         gradient_penalty = tf.reduce_sum(tf.square(fake_grads), axis=[1,2,3])
         gradient_penalty = autosummary('Loss/gradient_penalty', gradient_penalty)
         reg = gradient_penalty * (gamma * 0.5)
+        
+    autosummary('D_logistic_r2_03/total_loss', loss + reg)
+    autoimages('D_logistic_r2/images/real', reals)
+    autoimages('D_logistic_r2/images/fake', fake_images_out)
     return loss, reg
 
 #----------------------------------------------------------------------------
@@ -192,6 +200,7 @@ def G_logistic_ns_pathreg(G, D, opt, training_set, minibatch_size, pl_minibatch_
         #
         reg = pl_penalty * pl_weight
 
+    autosummary('G_logistic_ns_pathreg_02/total_loss', loss + reg)
     return loss, reg
 
 #----------------------------------------------------------------------------
