@@ -100,7 +100,7 @@ class TFRecordDataset:
         assert all(shape[0] == max_shape[0] for shape in tfr_shapes)
         assert all(shape[1] == shape[2] for shape in tfr_shapes)
         assert all(shape[1] == self.resolution // (2**lod) for shape, lod in zip(tfr_shapes, tfr_lods))
-        assert all(lod in tfr_lods for lod in range(self.resolution_log2 - 1))
+        # assert all(lod in tfr_lods for lod in range(self.resolution_log2 - 1))
 
         # Load labels.
         assert max_label_size == 'full' or max_label_size >= 0
