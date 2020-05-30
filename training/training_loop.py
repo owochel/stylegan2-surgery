@@ -157,7 +157,7 @@ def get_input_fn(load_training_set, num_cores, mirror_augment, drange_net):
     self = training_set = load_training_set(batch_size=0)
 
     def input_fn(params):
-        batch_size = params["batch_size"]\
+        batch_size = params["batch_size"]
         set_num_replicas(params["context"].num_replicas if "context" in params else 1)
         num_channels = training_set.shape[0]
         resolution = training_set.shape[1]
