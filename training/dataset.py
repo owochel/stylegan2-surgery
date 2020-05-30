@@ -17,6 +17,28 @@ import dnnlib.tflib as tflib
 from tensorflow.python.platform import gfile
 from tensorflow.python.framework import errors_impl
 
+def parse_tfrecord_np_aydao(record):
+    ex = tf.train.Example()
+    ex.ParseFromString(record)
+    shape = ex.features.feature[
+        "shape"
+    ].int64_list.value 
+    data = ex.features.feature["data"].bytes_list.value[
+        0
+    ]
+    return shape
+
+def parse_tfrecord_tf_aydao(record):
+    features = tf.parse_single_example(
+        record,
+        features={
+            "shape": tf.FixedLenFeature([3], tf.int64),
+            "data": tf.FixedLenFeature([], tf.string),
+        },
+    )
+    image = tf.image.decode_image(features['data']) 
+    return tf.transpose(image, [2,0,1]) 
+
 #----------------------------------------------------------------------------
 # Dataset class that loads data from tfrecords files.
 
@@ -193,20 +215,22 @@ class TFRecordDataset:
     # Parse individual image from a tfrecords file into TensorFlow expression.
     @staticmethod
     def parse_tfrecord_tf(record):
-        features = tf.parse_single_example(record, features={
-            'shape': tf.FixedLenFeature([3], tf.int64),
-            'data': tf.FixedLenFeature([], tf.string)})
-        data = tf.decode_raw(features['data'], tf.uint8)
-        return tf.reshape(data, features['shape'])
+        #features = tf.parse_single_example(record, features={
+        #    'shape': tf.FixedLenFeature([3], tf.int64),
+        #    'data': tf.FixedLenFeature([], tf.string)})
+        #data = tf.decode_raw(features['data'], tf.uint8)
+        #return tf.reshape(data, features['shape'])
+        return parse_tfrecord_tf_aydao(record)
 
     # Parse individual image from a tfrecords file into NumPy array.
     @staticmethod
     def parse_tfrecord_np(record):
-        ex = tf.train.Example()
-        ex.ParseFromString(record)
-        shape = ex.features.feature['shape'].int64_list.value # pylint: disable=no-member
-        data = ex.features.feature['data'].bytes_list.value[0] # pylint: disable=no-member
-        return np.fromstring(data, np.uint8).reshape(shape)
+        #ex = tf.train.Example()
+        #ex.ParseFromString(record)
+        #shape = ex.features.feature['shape'].int64_list.value # pylint: disable=no-member
+        #data = ex.features.feature['data'].bytes_list.value[0] # pylint: disable=no-member
+        #return np.fromstring(data, np.uint8).reshape(shape)
+        return parse_tfrecord_np_aydao(record)
 
 #----------------------------------------------------------------------------
 # Helper func for constructing a dataset object using the given options.
