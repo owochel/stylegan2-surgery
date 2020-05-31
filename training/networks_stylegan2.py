@@ -17,6 +17,9 @@ import functools
 # NOTE: Do not import any application-specific modules here!
 # Specify all network parameters as kwargs.
 
+def _i(x): return tf.transpose(x, [0,2,3,1])
+def _o(x): return tf.transpose(x, [0,3,1,2])
+
 #----------------------------------------------------------------------------
 # Get/create weight tensor for a convolution or fully-connected layer.
 
@@ -888,6 +891,7 @@ def non_local_block(x, name, use_sn):
     return tf.reshape(inputs, (-1, shape[1] * shape[2], shape[3]))
 
   with tf.variable_scope(name):
+    x = _i(x)
     h, w, num_channels = x.get_shape().as_list()[1:]
     num_channels_attn = num_channels // 8
     num_channels_g = num_channels // 2
@@ -918,13 +922,14 @@ def non_local_block(x, name, use_sn):
     attn_g = conv1x1(attn_g, num_channels, name="conv2d_attn_g", use_sn=use_sn,
                      use_bias=False)
     out = x + sigma * attn_g
+    out = _o(out)
     return out
 
 def use_selfattention(res):
     return 2**res == 64
 
 def toggle_selfattention_g():
-    return False
+    return True
 
 def toggle_selfattention_d():
-    return False
+    return True
