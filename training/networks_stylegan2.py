@@ -929,7 +929,7 @@ def use_selfattention(res):
     return 2**res == 64
 
 def toggle_selfattention_g():
-    return False
+    return True
 
 def toggle_selfattention_d():
-    return False
+    return True
