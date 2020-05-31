@@ -12,6 +12,7 @@ import dnnlib
 import dnnlib.tflib as tflib
 from dnnlib.tflib.ops.upfirdn_2d import upsample_2d, downsample_2d, upsample_conv_2d, conv_downsample_2d
 from dnnlib.tflib.ops.fused_bias_act import fused_bias_act
+import functools
 
 # NOTE: Do not import any application-specific modules here!
 # Specify all network parameters as kwargs.
@@ -482,6 +483,9 @@ def G_synthesis_stylegan2(
         fmaps_idx = res-1
         with tf.variable_scope('Conv0_up'):
             x = layer(x, layer_idx=layer_idx, fmaps=nf(fmaps_idx), kernel=3, up=True)
+        if use_selfattention(res) and toggle_selfattention_g():
+            print('Adding self-attention block to generator')
+            x = non_local_block(x, "SelfAtten", use_sn=True)
         with tf.variable_scope('Conv1'):
             x = layer(x, layer_idx=layer_idx+1, fmaps=nf(fmaps_idx), kernel=3)
 
@@ -685,6 +689,9 @@ def D_stylegan2(
         t = x
         with tf.variable_scope('Conv0'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-1), kernel=3), act=act)
+        if use_selfattention(res) and toggle_selfattention_d():
+            print('Adding self-attention block to discriminator')
+            x = non_local_block(x, "SelfAtten", use_sn=True)
         with tf.variable_scope('Conv1_down'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-2), kernel=3, down=True, resample_kernel=resample_kernel), act=act)
         if architecture == 'resnet':
@@ -737,3 +744,187 @@ def D_stylegan2(
     return scores_out
 
 #----------------------------------------------------------------------------
+
+NORMAL_INIT = "normal"
+TRUNCATED_INIT = "truncated"
+ORTHOGONAL_INIT = "orthogonal"
+INITIALIZERS = [NORMAL_INIT, TRUNCATED_INIT, ORTHOGONAL_INIT]
+
+def weight_initializer(initializer=NORMAL_INIT, stddev=0.02):
+  """Returns the initializer for the given name.
+
+  Args:
+    initializer: Name of the initalizer. Use one in INITIALIZERS.
+    stddev: Standard deviation passed to initalizer.
+
+  Returns:
+    Initializer from `tf.initializers`.
+  """
+  if initializer == NORMAL_INIT:
+    return tf.initializers.random_normal(stddev=stddev)
+  if initializer == TRUNCATED_INIT:
+    return tf.initializers.truncated_normal(stddev=stddev)
+  if initializer == ORTHOGONAL_INIT:
+    return tf.initializers.orthogonal()
+  raise ValueError("Unknown weight initializer {}.".format(initializer))
+
+def spectral_norm(inputs, epsilon=1e-12, singular_value="left", return_normalized=True, power_iteration_rounds=1):
+  """Performs Spectral Normalization on a weight tensor.
+
+  Details of why this is helpful for GAN's can be found in "Spectral
+  Normalization for Generative Adversarial Networks", Miyato T. et al., 2018.
+  [https://arxiv.org/abs/1802.05957].
+
+  Args:
+    inputs: The weight tensor to normalize.
+    epsilon: Epsilon for L2 normalization.
+    singular_value: Which first singular value to store (left or right). Use
+      "auto" to automatically choose the one that has fewer dimensions.
+
+  Returns:
+    The normalized weight tensor.
+  """
+  if len(inputs.shape) < 2:
+    raise ValueError(
+        "Spectral norm can only be applied to multi-dimensional tensors")
+
+  # The paper says to flatten convnet kernel weights from (C_out, C_in, KH, KW)
+  # to (C_out, C_in * KH * KW). Our Conv2D kernel shape is (KH, KW, C_in, C_out)
+  # so it should be reshaped to (KH * KW * C_in, C_out), and similarly for other
+  # layers that put output channels as last dimension. This implies that w
+  # here is equivalent to w.T in the paper.
+  w = tf.reshape(inputs, (-1, inputs.shape[-1]))
+
+  # Choose whether to persist the first left or first right singular vector.
+  # As the underlying matrix is PSD, this should be equivalent, but in practice
+  # the shape of the persisted vector is different. Here one can choose whether
+  # to maintain the left or right one, or pick the one which has the smaller
+  # dimension. We use the same variable for the singular vector if we switch
+  # from normal weights to EMA weights.
+  var_name = inputs.name.replace("/ExponentialMovingAverage", "").split("/")[-1]
+  var_name = var_name.split(":")[0] + "/u_var"
+  if singular_value == "auto":
+    singular_value = "left" if w.shape[0] <= w.shape[1] else "right"
+  u_shape = (w.shape[0], 1) if singular_value == "left" else (1, w.shape[-1])
+  u_var = tf.get_variable(
+      var_name,
+      shape=u_shape,
+      dtype=w.dtype,
+      initializer=tf.random_normal_initializer(),
+      collections=[tf.GraphKeys.LOCAL_VARIABLES],
+      trainable=False, use_resource=True)
+  u = u_var
+
+  # Use power iteration method to approximate the spectral norm.
+  # The authors suggest that one round of power iteration was sufficient in the
+  # actual experiment to achieve satisfactory performance.
+  for _ in range(power_iteration_rounds):
+    if singular_value == "left":
+      # `v` approximates the first right singular vector of matrix `w`.
+      v = tf.math.l2_normalize(
+          tf.matmul(tf.transpose(w), u), axis=None, epsilon=epsilon)
+      u = tf.math.l2_normalize(tf.matmul(w, v), axis=None, epsilon=epsilon)
+    else:
+      v = tf.math.l2_normalize(tf.matmul(u, w, transpose_b=True),
+                               epsilon=epsilon)
+      u = tf.math.l2_normalize(tf.matmul(v, w), epsilon=epsilon)
+  # Update the approximation.
+  with tf.control_dependencies([tf.assign(u_var, u, name="update_u")]):
+    u = tf.identity(u)
+  # The authors of SN-GAN chose to stop gradient propagating through u and v
+  # and we maintain that option.
+  u = tf.stop_gradient(u)
+  v = tf.stop_gradient(v)
+  if singular_value == "left":
+    norm_value = tf.matmul(tf.matmul(tf.transpose(u), w), v)
+  else:
+    norm_value = tf.matmul(tf.matmul(v, w), u, transpose_b=True)
+  norm_value.shape.assert_is_fully_defined()
+  norm_value.shape.assert_is_compatible_with([1, 1])
+  if return_normalized:
+    w_normalized = w / norm_value
+    # Deflate normalized weights to match the unnormalized tensor.
+    w_tensor_normalized = tf.reshape(w_normalized, inputs.shape)
+    return w_tensor_normalized
+  else:
+    return w, norm_value
+
+def conv2d(inputs, output_dim, k_h, k_w, d_h, d_w, stddev=0.02, name="conv2d",
+           use_sn=False, use_bias=True):
+  """Performs 2D convolution of the input."""
+  with tf.variable_scope(name):
+    w = tf.get_variable(
+        "kernel", [k_h, k_w, inputs.shape[-1].value, output_dim],
+        initializer=weight_initializer(stddev=stddev), use_resource=True)
+    if use_sn:
+      w = spectral_norm(w)
+    outputs = tf.nn.conv2d(inputs, w, strides=[1, d_h, d_w, 1], padding="SAME")
+    if use_bias:
+      bias = tf.get_variable(
+          "bias", [output_dim], initializer=tf.constant_initializer(0.0), use_resource=True)
+      outputs += bias
+  return outputs
+
+conv1x1 = functools.partial(conv2d, k_h=1, k_w=1, d_h=1, d_w=1)
+
+
+def non_local_block(x, name, use_sn):
+  """Self-attention (non-local) block.
+
+  This method is used to exactly reproduce SAGAN and ignores Gin settings on
+  weight initialization and spectral normalization.
+
+
+  Args:
+    x: Input tensor of shape [batch, h, w, c].
+    name: Name of the variable scope.
+    use_sn: Apply spectral norm to the weights.
+
+  Returns:
+    A tensor of the same shape after self-attention was applied.
+  """
+  def _spatial_flatten(inputs):
+    shape = inputs.shape
+    return tf.reshape(inputs, (-1, shape[1] * shape[2], shape[3]))
+
+  with tf.variable_scope(name):
+    h, w, num_channels = x.get_shape().as_list()[1:]
+    num_channels_attn = num_channels // 8
+    num_channels_g = num_channels // 2
+
+    # Theta path
+    theta = conv1x1(x, num_channels_attn, name="conv2d_theta", use_sn=use_sn,
+                    use_bias=False)
+    theta = _spatial_flatten(theta)
+
+    # Phi path
+    phi = conv1x1(x, num_channels_attn, name="conv2d_phi", use_sn=use_sn,
+                  use_bias=False)
+    phi = tf.layers.max_pooling2d(inputs=phi, pool_size=[2, 2], strides=2)
+    phi = _spatial_flatten(phi)
+
+    attn = tf.matmul(theta, phi, transpose_b=True)
+    attn = tf.nn.softmax(attn)
+
+    # G path
+    g = conv1x1(x, num_channels_g, name="conv2d_g", use_sn=use_sn,
+                use_bias=False)
+    g = tf.layers.max_pooling2d(inputs=g, pool_size=[2, 2], strides=2)
+    g = _spatial_flatten(g)
+
+    attn_g = tf.matmul(attn, g)
+    attn_g = tf.reshape(attn_g, [-1, h, w, num_channels_g])
+    sigma = tf.get_variable("sigma", [], initializer=tf.zeros_initializer(), use_resource=True)
+    attn_g = conv1x1(attn_g, num_channels, name="conv2d_attn_g", use_sn=use_sn,
+                     use_bias=False)
+    out = x + sigma * attn_g
+    return out
+
+def use_selfattention(res):
+    return 2**res == 64
+
+def toggle_selfattention_g():
+    return False
+
+def toggle_selfattention_d():
+    return False
