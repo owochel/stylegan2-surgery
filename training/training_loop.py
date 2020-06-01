@@ -365,6 +365,7 @@ def training_loop(
         #train_op = G_opt.minimize(G_loss, global_step=tf.train.get_or_create_global_step())
         return tf.contrib.tpu.TPUEstimatorSpec(
             mode=mode,
+            host_call = get_tpu_summary().get_host_call(),
             loss=loss,
             train_op=train_op)
 
