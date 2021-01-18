@@ -22,6 +22,7 @@ set -e
 #       style_mixing_prob       = None,
 #   increase BOTH latentsize and dlatent size to 1024 
 #   normalize_latents set to False
+#   only four mapping layers in G_mapping
 #   increase fmaps in G:
 #       fmap_base           = 32 << 10
 #       fmap_max            1024
