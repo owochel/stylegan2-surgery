@@ -30,7 +30,7 @@ set -e
 #   set gamma to 5.0 (used to be  --gamma=10.0, lowered at ~4 million)
 #   learning rate lowered late in training (see below)
 #   topk added at ~2.3 million
-#   switched from RANDOM_CROP to TOP_CROP at 
+#   switched from RANDOM_CROP to TOP_CROP at 4.5 million
 #   no noconst (just normal const ... lol I thought it was noconst, oh well)
 #   did not use mirror augmentation
 #   used figures, portraits, and hand data augmentation (PALM and the rest) 
