@@ -59,12 +59,12 @@ export D_LR_MULT=1.0
 
 data_dir=your gs:// data bucket here # placeholder -- refer to shawwn's tpu code
 dataset=animefaces # placeholder -- refer to shawwn's tpu code
-mirror=false # Note: this was false for the 
+mirror=false # Note: this was false for the entire training
 metrics=none
 
 export TPU_SPLIT_COMPILE_AND_EXECUTE=1
 export TF_TPU_WATCHDOG_TIMEOUT=1800
-export TPU_HOST=10.255.128.3
+export TPU_HOST=your tpu host here # placeholder -- refer to shawwn's tpu code
 export TPU_NAME=your tpu name / IP here # placeholder -- refer to shawwn's tpu code
 cores=32
 
