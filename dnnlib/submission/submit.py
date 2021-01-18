@@ -18,6 +18,10 @@ import shutil
 import sys
 import time
 import traceback
+import threading
+import dnnlib.tflib as tflib
+import tflex
+import tensorflow as tf
 
 from enum import Enum
 
@@ -32,7 +36,6 @@ class SubmitTarget(Enum):
     LOCAL: Run it locally.
     """
     LOCAL = 1
-    DIAGNOSTIC = 17
 
 
 class PathType(Enum):
@@ -116,14 +119,14 @@ class SubmitConfig(util.EasyDict):
 
 def get_path_from_template(path_template: str, path_type: PathType = PathType.AUTO) -> str:
     """Replace tags in the given path template and return either Windows or Linux formatted path."""
+    if path_template.startswith('gs://'):
+      return path_template
     # automatically select path type depending on running OS
     if path_type == PathType.AUTO:
         if platform.system() == "Windows":
             path_type = PathType.WINDOWS
-        elif platform.system() == "Linux":
-            path_type = PathType.LINUX
         else:
-            raise RuntimeError("Unknown platform")
+            path_type = PathType.LINUX
 
     path_template = path_template.replace("<USERNAME>", get_user_name())
 
@@ -161,15 +164,12 @@ def get_user_name():
         return _user_name_override
     elif platform.system() == "Windows":
         return os.getlogin()
-    elif platform.system() == "Linux":
+    else:
         try:
-            import pwd
-            return pwd.getpwuid(os.geteuid()).pw_name
+            import pwd # pylint: disable=import-error
+            return pwd.getpwuid(os.geteuid()).pw_name # pylint: disable=no-member
         except:
             return "unknown"
-    else:
-        raise RuntimeError("Unknown platform")
-
 
 def make_run_dir_path(*paths):
     """Make a path/filename that resides under the current submit run_dir.
@@ -274,11 +274,50 @@ def run_wrapper(submit_config: SubmitConfig) -> None:
 
         run_func_obj = util.get_obj_by_name(submit_config.run_func_name)
         assert callable(run_func_obj)
-        sig = inspect.signature(run_func_obj)
-        if 'submit_config' in sig.parameters:
-            run_func_obj(submit_config=submit_config, **submit_config.run_func_kwargs)
+        def thunk():
+            sig = inspect.signature(run_func_obj)
+            if 'submit_config' in sig.parameters:
+                run_func_obj(submit_config=submit_config, **submit_config.run_func_kwargs)
+            else:
+                run_func_obj(**submit_config.run_func_kwargs)
+
+        kws = submit_config.run_func_kwargs
+        tf_config = kws['tf_config'] if 'tf_config' in kws else {}
+        if 'TPU_NAME' not in os.environ or 'NO_SWARM' in os.environ:
+            tflib.init_tf(tf_config)
+            thunk()
         else:
-            run_func_obj(**submit_config.run_func_kwargs)
+            threads = []
+            tflex.trainers = []
+            tpu_core_count = 1 if 'TPU_CORE_COUNT' not in os.environ else int(os.environ['TPU_CORE_COUNT'])
+            tpu_core_offset = 0 if 'TPU_CORE_OFFSET' not in os.environ else int(os.environ['TPU_CORE_OFFSET'])
+            for i in range(tpu_core_count):
+                def worker(i):
+                    _id = i + tpu_core_offset
+                    spec = '#%d' % _id
+                    print(spec, 'Initializing...')
+                    tflib.init_tf(tf_config)
+                    sess = tf.get_default_session()
+                    cores = tflex.get_cores()[tpu_core_offset:tpu_core_offset+tpu_core_count]
+                    sess.id = _id
+                    tflex.trainers.append(sess)
+                    if False:
+                      tflex.set_override_device(cores[i])
+                      with tf.device(cores[i]):
+                          print(spec, 'Running thunk...')
+                          thunk()
+                    else:
+                      tflex.set_override_cores(cores)
+                      print(spec, 'Running thunk...')
+                      thunk()
+                if tpu_core_count <= 1:
+                  worker(i)
+                else:
+                  thread = threading.Thread(target=worker, args=(i,))
+                  threads.append(thread)
+                  thread.start()
+            for thread in threads:
+                thread.join()
 
         print("dnnlib: Finished {0}() in {1}.".format(submit_config.run_func_name, util.format_time(time.time() - start_time)))
     except:
@@ -287,18 +326,14 @@ def run_wrapper(submit_config: SubmitConfig) -> None:
         else:
             traceback.print_exc()
 
-            try:
-                log_src = os.path.join(submit_config.run_dir, "log.txt")
-                log_dst = os.path.join(get_path_from_template(submit_config.run_dir_root), "{0}-error.txt".format(submit_config.run_name))
-                shutil.copyfile(log_src, log_dst)
-            except:
-                print("Failing hard, check stack trace")
+            log_src = os.path.join(submit_config.run_dir, "log.txt")
+            log_dst = os.path.join(get_path_from_template(submit_config.run_dir_root), "{0}-error.txt".format(submit_config.run_name))
+            shutil.copyfile(log_src, log_dst)
 
             # Defer sys.exit(1) to happen after we close the logs and create a _finished.txt
             exit_with_errcode = True
     finally:
-        if submit_config.submit_target != SubmitTarget.DIAGNOSTIC:
-            open(os.path.join(submit_config.run_dir, "_finished.txt"), "w").close()
+        open(os.path.join(submit_config.run_dir, "_finished.txt"), "w").close()
 
     dnnlib.RunContext.get().close()
     dnnlib.submit_config = None
@@ -345,25 +380,4 @@ def submit_run(submit_config: SubmitConfig, run_func_name: str, **run_func_kwarg
     # Farm specific preparations for a submit
     farm.finalize_submit_config(submit_config, host_run_dir)
     _populate_run_dir(submit_config, host_run_dir)
-    return farm.submit(submit_config, host_run_dir)
-
-def submit_diagnostic(submit_config: SubmitConfig, run_func_name: str, **run_func_kwargs) -> None:
-    """Launch a run without creating a run directory."""
-    submit_config = copy.deepcopy(submit_config)
-
-    submit_target = submit_config.submit_target
-    farm = None
-    if submit_target == SubmitTarget.LOCAL or submit_target == SubmitTarget.DIAGNOSTIC:
-        farm = internal.local.Target()
-    assert farm is not None # unknown target
-
-    if submit_config.user_name is None:
-        submit_config.user_name = get_user_name()
-
-    submit_config.run_func_name = run_func_name
-    submit_config.run_func_kwargs = run_func_kwargs
-
-    host_run_dir = ""
-    # Farm specific preparations for a submit
-    farm.finalize_submit_config(submit_config, host_run_dir)
     return farm.submit(submit_config, host_run_dir)

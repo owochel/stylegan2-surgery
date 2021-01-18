@@ -9,16 +9,12 @@ import copy
 import os
 import sys
 
-import warnings
-warnings.filterwarnings('ignore',category=FutureWarning)
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-import tensorflow as tf
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-
 import dnnlib
 from dnnlib import EasyDict
 
 from metrics.metric_defaults import metric_defaults
+
+from tensorflow.python.platform import gfile
 
 #----------------------------------------------------------------------------
 
@@ -39,44 +35,51 @@ _valid_configs = [
 
 #----------------------------------------------------------------------------
 
-def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, mirror_augment_v, metrics, height, width, lr, cond, resume_pkl, resume_kimg):
+def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, metrics):
     train     = EasyDict(run_func_name='training.training_loop.training_loop') # Options for training loop.
     G         = EasyDict(func_name='training.networks_stylegan2.G_main')       # Options for generator network.
     D         = EasyDict(func_name='training.networks_stylegan2.D_stylegan2')  # Options for discriminator network.
     G_opt     = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                  # Options for generator optimizer.
     D_opt     = EasyDict(beta1=0.0, beta2=0.99, epsilon=1e-8)                  # Options for discriminator optimizer.
-    G_loss    = EasyDict(func_name='training.loss.G_logistic_ns_pathreg')      # Options for generator loss.
+    G_loss    = EasyDict(func_name='training.loss.G_logistic_ns')      # Options for generator loss.
     D_loss    = EasyDict(func_name='training.loss.D_logistic_r1')              # Options for discriminator loss.
     sched     = EasyDict()                                                     # Options for TrainingSchedule.
     grid      = EasyDict(size='8k', layout='random')                           # Options for setup_snapshot_image_grid().
     sc        = dnnlib.SubmitConfig()                                          # Options for dnnlib.submit_run().
     tf_config = {'rnd.np_random_seed': 1000}                                   # Options for tflib.init_tf().
 
+    if 'TRAINING_LOSS_D' in os.environ:
+        D_loss.func_name = os.environ['TRAINING_LOSS_D']
+
+    if 'TRAINING_LOSS_G' in os.environ:
+        G_loss.func_name = os.environ['TRAINING_LOSS_G']
+
     train.data_dir = data_dir
     train.total_kimg = total_kimg
     train.mirror_augment = mirror_augment
-    train.mirror_augment_v = mirror_augment_v
-    train.image_snapshot_ticks = 1
-    train.network_snapshot_ticks = 1
-    sched.D_lrate_base = lr
-    sched.G_lrate_base = 0.5 * sched.D_lrate_base # two time update rule enforced
-    sched.minibatch_size_base = 192
-    sched.minibatch_gpu_base = 3
-    D_loss.gamma = 10
+    train.image_snapshot_ticks = train.network_snapshot_ticks = 10
+    sched.G_lrate_base = float(os.environ['G_LR']) if 'G_LR' in os.environ else 0.002
+    sched.D_lrate_base = float(os.environ['D_LR']) if 'D_LR' in os.environ else 0.002
+    sched.G_lrate_base *= float(os.environ['G_LR_MULT']) if 'G_LR_MULT' in os.environ else 1.0
+    sched.D_lrate_base *= float(os.environ['D_LR_MULT']) if 'D_LR_MULT' in os.environ else 1.0
+    G_opt.beta2 = float(os.environ['G_BETA2']) if 'G_BETA2' in os.environ else 0.99
+    D_opt.beta2 = float(os.environ['D_BETA2']) if 'D_BETA2' in os.environ else 0.99
+    print('G_lrate: %f' % sched.G_lrate_base)
+    print('D_lrate: %f' % sched.D_lrate_base)
+    print('G_beta2: %f' % G_opt.beta2)
+    print('D_beta2: %f' % D_opt.beta2)
+    sched.minibatch_size_base = int(os.environ['BATCH_SIZE']) if 'BATCH_SIZE' in os.environ else num_gpus
+    sched.minibatch_gpu_base = int(os.environ['BATCH_PER']) if 'BATCH_PER' in os.environ else 1
     metrics = [metric_defaults[x] for x in metrics]
     desc = 'stylegan2'
 
     desc += '-' + dataset
-    dataset_args = EasyDict(tfrecord_dir=dataset)
-    # G.min_h = D.min_h = dataset_args.min_h = min_h
-    # G.min_w = D.min_w = dataset_args.min_w = min_w
-    # G.res_log2 = D.res_log2 = dataset_args.res_log2 = res_log2
-    assert num_gpus in [1, 2, 4, 8]
+    resolution = int(os.environ['RESOLUTION']) if 'RESOLUTION' in os.environ else 64
+    dataset_args = EasyDict(tfrecord_dir=dataset, resolution=resolution)
+
+    assert num_gpus in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
     sc.num_gpus = num_gpus
     desc += '-%dgpu' % num_gpus
-
-    if cond:
-        desc += '-cond'; dataset_args.max_label_size = 'full' # conditioned on full label
 
     assert config_id in _valid_configs
     desc += '-' + config_id
@@ -84,6 +87,14 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
     # Configs A-E: Shrink networks to match original StyleGAN.
     if config_id != 'config-f':
         G.fmap_base = D.fmap_base = 8 << 10
+
+    if 'FMAP_BASE' in os.environ:
+      G.fmap_base = D.fmap_base = int(os.environ['FMAP_BASE']) << 10
+    else:
+      G.fmap_base = D.fmap_base = 16 << 10 # default
+
+    print('G_fmap_base: %d' % G.fmap_base)
+    print('D_fmap_base: %d' % D.fmap_base)
 
     # Config E: Set gamma to 100 and override G & D architecture.
     if config_id.startswith('config-e'):
@@ -123,17 +134,11 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
     if gamma is not None:
         D_loss.gamma = gamma
 
-    G.update(resolution_h=height)
-    G.update(resolution_w=width)
-    D.update(resolution_h=height)
-    D.update(resolution_w=width)
-
     sc.submit_target = dnnlib.SubmitTarget.LOCAL
     sc.local.do_not_copy_source_files = True
     kwargs = EasyDict(train)
     kwargs.update(G_args=G, D_args=D, G_opt_args=G_opt, D_opt_args=D_opt, G_loss_args=G_loss, D_loss_args=D_loss)
     kwargs.update(dataset_args=dataset_args, sched_args=sched, grid_args=grid, metric_arg_list=metrics, tf_config=tf_config)
-    kwargs.update(resume_pkl=resume_pkl, resume_kimg=resume_kimg)
     kwargs.submit_config = copy.deepcopy(sc)
     kwargs.submit_config.run_dir_root = result_dir
     kwargs.submit_config.run_desc = desc
@@ -187,18 +192,11 @@ def main():
     parser.add_argument('--total-kimg', help='Training length in thousands of images (default: %(default)s)', metavar='KIMG', default=25000, type=int)
     parser.add_argument('--gamma', help='R1 regularization weight (default is config dependent)', default=None, type=float)
     parser.add_argument('--mirror-augment', help='Mirror augment (default: %(default)s)', default=False, metavar='BOOL', type=_str_to_bool)
-    parser.add_argument('--mirror-augment-v', help='Mirror augment vertically (default: %(default)s)', default=False, metavar='BOOL', type=_str_to_bool)
-    parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: fid50k)', default='none', type=_parse_comma_sep)
-    parser.add_argument('--height', help='dimension of height of input/output images (e.g., 1024)', required=True, type=int)
-    parser.add_argument('--width', help='dimension of width of input/output images (e.g., 1024)', required=True, type=int)
-    parser.add_argument('--lr', help='base learning rate', default=0.003, type=float)
-    parser.add_argument('--cond', help='conditional model', default=False, metavar='BOOL', type=_str_to_bool)
-    parser.add_argument('--resume-pkl', help='pkl to resume training from: None)', default=None, type=str)
-    parser.add_argument('--resume-kimg', help='kimg to resume training from" (default: 0)', default=0, type=int)
+    parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: %(default)s)', default='fid50k', type=_parse_comma_sep)
 
     args = parser.parse_args()
 
-    if not os.path.exists(args.data_dir):
+    if not gfile.IsDirectory(args.data_dir):
         print ('Error: dataset root directory does not exist.')
         sys.exit(1)
 
@@ -219,5 +217,4 @@ if __name__ == "__main__":
     main()
 
 #----------------------------------------------------------------------------
-
 

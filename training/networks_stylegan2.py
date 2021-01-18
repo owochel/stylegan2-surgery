@@ -6,6 +6,7 @@
 
 """Network architectures used in the StyleGAN2 paper."""
 
+import os
 import numpy as np
 import tensorflow as tf
 import dnnlib
@@ -13,6 +14,7 @@ import dnnlib.tflib as tflib
 from dnnlib.tflib.ops.upfirdn_2d import upsample_2d, downsample_2d, upsample_conv_2d, conv_downsample_2d
 from dnnlib.tflib.ops.fused_bias_act import fused_bias_act
 import functools
+from dnnlib.tflib.autosummary import autosummary #, autoimages
 
 # NOTE: Do not import any application-specific modules here!
 # Specify all network parameters as kwargs.
@@ -37,7 +39,7 @@ def get_weight(shape, gain=1, use_wscale=True, lrmul=1, weight_var='weight'):
 
     # Create variable.
     init = tf.initializers.random_normal(0, init_std)
-    return tf.get_variable(weight_var, shape=shape, initializer=init) * runtime_coef
+    return tf.get_variable(weight_var, shape=shape, initializer=init, use_resource=True) * runtime_coef
 
 #----------------------------------------------------------------------------
 # Fully-connected layer.
@@ -55,20 +57,20 @@ def dense_layer(x, fmaps, gain=1, use_wscale=True, lrmul=1, weight_var='weight')
 def conv2d_layer(x, fmaps, kernel, up=False, down=False, resample_kernel=None, gain=1, use_wscale=True, lrmul=1, weight_var='weight'):
     assert not (up and down)
     assert kernel >= 1 and kernel % 2 == 1
-    w = get_weight([kernel, kernel, x.shape[1].value, fmaps], gain=gain, use_wscale=use_wscale, lrmul=lrmul, weight_var=weight_var)
+    w = graph_spectral_norm(get_weight([kernel, kernel, x.shape[1].value, fmaps], gain=gain, use_wscale=use_wscale, lrmul=lrmul, weight_var=weight_var))
     if up:
-        x = upsample_conv_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = _o(upsample_conv_2d(_i(x), tf.cast(w, x.dtype), data_format='NHWC', k=resample_kernel))
     elif down:
-        x = conv_downsample_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = _o(conv_downsample_2d(_i(x), tf.cast(w, x.dtype), data_format='NHWC', k=resample_kernel))
     else:
-        x = tf.nn.conv2d(x, tf.cast(w, x.dtype), data_format='NCHW', strides=[1,1,1,1], padding='SAME')
+        x = _o(tf.nn.conv2d(_i(x), tf.cast(w, x.dtype), data_format='NHWC', strides=[1,1,1,1], padding='SAME'))
     return x
 
 #----------------------------------------------------------------------------
 # Apply bias and activation func.
 
 def apply_bias_act(x, act='linear', alpha=None, gain=None, lrmul=1, bias_var='bias'):
-    b = tf.get_variable(bias_var, shape=[x.shape[1]], initializer=tf.initializers.zeros()) * lrmul
+    b = tf.get_variable(bias_var, shape=[x.shape[1]], initializer=tf.initializers.zeros(), use_resource=True) * lrmul
     return fused_bias_act(x, b=tf.cast(b, x.dtype), act=act, alpha=alpha, gain=gain)
 
 #----------------------------------------------------------------------------
@@ -95,7 +97,7 @@ def modulated_conv2d_layer(x, y, fmaps, kernel, up=False, down=False, demodulate
     assert kernel >= 1 and kernel % 2 == 1
 
     # Get weight.
-    w = get_weight([kernel, kernel, x.shape[1].value, fmaps], gain=gain, use_wscale=use_wscale, lrmul=lrmul, weight_var=weight_var)
+    w = graph_spectral_norm(get_weight([kernel, kernel, x.shape[1].value, fmaps], gain=gain, use_wscale=use_wscale, lrmul=lrmul, weight_var=weight_var))
     ww = w[np.newaxis] # [BkkIO] Introduce minibatch dimension.
 
     # Modulate.
@@ -117,11 +119,11 @@ def modulated_conv2d_layer(x, y, fmaps, kernel, up=False, down=False, demodulate
 
     # Convolution with optional up/downsampling.
     if up:
-        x = upsample_conv_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = _o(upsample_conv_2d(_i(x), tf.cast(w, x.dtype), data_format='NHWC', k=resample_kernel))
     elif down:
-        x = conv_downsample_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = _o(conv_downsample_2d(_i(x), tf.cast(w, x.dtype), data_format='NHWC', k=resample_kernel))
     else:
-        x = tf.nn.conv2d(x, tf.cast(w, x.dtype), data_format='NCHW', strides=[1,1,1,1], padding='SAME')
+        x = _o(tf.nn.conv2d(_i(x), tf.cast(w, x.dtype), data_format='NHWC', strides=[1,1,1,1], padding='SAME'))
 
     # Reshape/scale output.
     if fused_modconv:
@@ -170,6 +172,8 @@ def G_main(
     synthesis_func          = 'G_synthesis_stylegan2',  # Build func name for the synthesis network.
     **kwargs):                                          # Arguments for sub-networks (mapping and synthesis).
 
+    style_mixing_prob = None
+
     # Validate arguments.
     assert not is_training or not is_validation
     assert isinstance(components, dnnlib.EasyDict)
@@ -189,13 +193,14 @@ def G_main(
     if 'synthesis' not in components:
         components.synthesis = tflib.Network('G_synthesis', func_name=globals()[synthesis_func], **kwargs)
     num_layers = components.synthesis.input_shape[1]
-    dlatent_size = components.synthesis.input_shape[2]
+    dlatent_size = 1024 # components.synthesis.input_shape[2]
+    print('dlatent_size in gmain',dlatent_size)
     if 'mapping' not in components:
         components.mapping = tflib.Network('G_mapping', func_name=globals()[mapping_func], dlatent_broadcast=num_layers, **kwargs)
 
     # Setup variables.
-    lod_in = tf.get_variable('lod', initializer=np.float32(0), trainable=False)
-    dlatent_avg = tf.get_variable('dlatent_avg', shape=[dlatent_size], initializer=tf.initializers.zeros(), trainable=False)
+    lod_in = tf.get_variable('lod', initializer=np.float32(0), trainable=False, use_resource=True)
+    dlatent_avg = tf.get_variable('dlatent_avg', shape=[dlatent_size], initializer=tf.initializers.zeros(), trainable=False, use_resource=True)
 
     # Evaluate mapping network.
     dlatents = components.mapping.get_output_for(latents_in, labels_in, is_training=is_training, **kwargs)
@@ -267,6 +272,12 @@ def G_mapping(
     dtype                   = 'float32',    # Data type to use for activations and outputs.
     **_kwargs):                             # Ignore unrecognized keyword args.
 
+    normalize_latents = False
+    latent_size = 1024
+    dlatent_size = 1024
+    mapping_fmaps = 1024
+    mapping_layers = 4
+
     act = mapping_nonlinearity
 
     # Inputs.
@@ -279,7 +290,7 @@ def G_mapping(
     # Embed labels and concatenate them with latents.
     if label_size:
         with tf.variable_scope('LabelConcat'):
-            w = tf.get_variable('weight', shape=[label_size, latent_size], initializer=tf.initializers.random_normal())
+            w = tf.get_variable('weight', shape=[label_size, latent_size], initializer=tf.initializers.random_normal(), use_resource=True)
             y = tf.matmul(labels_in, tf.cast(w, dtype))
             x = tf.concat([x, y], axis=1)
 
@@ -308,111 +319,6 @@ def G_mapping(
 # Implements progressive growing, but no skip connections or residual nets (Figure 7).
 # Used in configs B-D (Table 1).
 
-def G_synthesis_stylegan_revised(
-    dlatents_in,                        # Input: Disentangled latents (W) [minibatch, num_layers, dlatent_size].
-    dlatent_size        = 512,          # Disentangled latent (W) dimensionality.
-    num_channels        = 3,            # Number of output color channels.
-    resolution          = 1024,         # Output resolution.
-    fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
-    fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
-    fmap_min            = 1,            # Minimum number of feature maps in any layer.
-    fmap_max            = 512,          # Maximum number of feature maps in any layer.
-    randomize_noise     = True,         # True = randomize noise inputs every time (non-deterministic), False = read noise inputs from variables.
-    nonlinearity        = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
-    dtype               = 'float32',    # Data type to use for activations and outputs.
-    resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
-    fused_modconv       = True,         # Implement modulated_conv2d_layer() as a single fused op?
-    structure           = 'auto',       # 'fixed' = no progressive growing, 'linear' = human-readable, 'recursive' = efficient, 'auto' = select automatically.
-    is_template_graph   = False,        # True = template graph constructed by the Network class, False = actual evaluation.
-    force_clean_graph   = False,        # True = construct a clean graph that looks nice in TensorBoard, False = default behavior.
-    **_kwargs):                         # Ignore unrecognized keyword args.
-
-    resolution_log2 = int(np.log2(resolution))
-    assert resolution == 2**resolution_log2 and resolution >= 4
-    def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
-    if is_template_graph: force_clean_graph = True
-    if force_clean_graph: randomize_noise = False
-    if structure == 'auto': structure = 'linear' if force_clean_graph else 'recursive'
-    act = nonlinearity
-    num_layers = resolution_log2 * 2 - 2
-    images_out = None
-
-    # Primary inputs.
-    dlatents_in.set_shape([None, num_layers, dlatent_size])
-    dlatents_in = tf.cast(dlatents_in, dtype)
-    lod_in = tf.cast(tf.get_variable('lod', initializer=np.float32(0), trainable=False), dtype)
-
-    # Noise inputs.
-    noise_inputs = []
-    for layer_idx in range(num_layers - 1):
-        res = (layer_idx + 5) // 2
-        shape = [1, 1, 2**res, 2**res]
-        noise_inputs.append(tf.get_variable('noise%d' % layer_idx, shape=shape, initializer=tf.initializers.random_normal(), trainable=False))
-
-    # Single convolution layer with all the bells and whistles.
-    def layer(x, layer_idx, fmaps, kernel, up=False):
-        x = modulated_conv2d_layer(x, dlatents_in[:, layer_idx], fmaps=fmaps, kernel=kernel, up=up, resample_kernel=resample_kernel, fused_modconv=fused_modconv)
-        if randomize_noise:
-            noise = tf.random_normal([tf.shape(x)[0], 1, x.shape[2], x.shape[3]], dtype=x.dtype)
-        else:
-            noise = tf.cast(noise_inputs[layer_idx], x.dtype)
-        noise_strength = tf.get_variable('noise_strength', shape=[], initializer=tf.initializers.zeros())
-        x += noise * tf.cast(noise_strength, x.dtype)
-        return apply_bias_act(x, act=act)
-
-    # Early layers.
-    with tf.variable_scope('4x4'):
-        with tf.variable_scope('Const'):
-            x = tf.get_variable('const', shape=[1, nf(1), 4, 4], initializer=tf.initializers.random_normal())
-            x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
-        with tf.variable_scope('Conv'):
-            x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
-
-    # Building blocks for remaining layers.
-    def block(res, x): # res = 3..resolution_log2
-        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
-            with tf.variable_scope('Conv0_up'):
-                x = layer(x, layer_idx=res*2-5, fmaps=nf(res-1), kernel=3, up=True)
-            with tf.variable_scope('Conv1'):
-                x = layer(x, layer_idx=res*2-4, fmaps=nf(res-1), kernel=3)
-            return x
-    def torgb(res, x): # res = 2..resolution_log2
-        with tf.variable_scope('ToRGB_lod%d' % (resolution_log2 - res)):
-            return apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2-3], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
-
-    # Fixed structure: simple and efficient, but does not support progressive growing.
-    if structure == 'fixed':
-        for res in range(3, resolution_log2 + 1):
-            x = block(res, x)
-        images_out = torgb(resolution_log2, x)
-
-    # Linear structure: simple but inefficient.
-    if structure == 'linear':
-        images_out = torgb(2, x)
-        for res in range(3, resolution_log2 + 1):
-            lod = resolution_log2 - res
-            x = block(res, x)
-            img = torgb(res, x)
-            with tf.variable_scope('Upsample_lod%d' % lod):
-                images_out = upsample_2d(images_out)
-            with tf.variable_scope('Grow_lod%d' % lod):
-                images_out = tflib.lerp_clip(img, images_out, lod_in - lod)
-
-    # Recursive structure: complex but efficient.
-    if structure == 'recursive':
-        def cset(cur_lambda, new_cond, new_lambda):
-            return lambda: tf.cond(new_cond, new_lambda, cur_lambda)
-        def grow(x, res, lod):
-            y = block(res, x)
-            img = lambda: naive_upsample_2d(torgb(res, y), factor=2**lod)
-            img = cset(img, (lod_in > lod), lambda: naive_upsample_2d(tflib.lerp(torgb(res, y), upsample_2d(torgb(res - 1, x)), lod_in - lod), factor=2**lod))
-            if lod > 0: img = cset(img, (lod_in < lod), lambda: grow(y, res + 1, lod - 1))
-            return img()
-        images_out = grow(x, 3, resolution_log2 - 3)
-
-    assert images_out.dtype == tf.as_dtype(dtype)
-    return tf.identity(images_out, name='images_out')
-
 #----------------------------------------------------------------------------
 # StyleGAN2 synthesis network (Figure 7).
 # Implements skip connections and residual nets (Figure 7), but no progressive growing.
@@ -422,8 +328,7 @@ def G_synthesis_stylegan2(
     dlatents_in,                        # Input: Disentangled latents (W) [minibatch, num_layers, dlatent_size].
     dlatent_size        = 512,          # Disentangled latent (W) dimensionality.
     num_channels        = 3,            # Number of output color channels.
-    resolution_h        = -1,
-    resolution_w        = -1,
+    resolution          = 1024,         # Output resolution.
     fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
     fmap_min            = 1,            # Minimum number of feature maps in any layer.
@@ -437,24 +342,18 @@ def G_synthesis_stylegan2(
     **_kwargs):                         # Ignore unrecognized keyword args.
 
 
-    res_log2_h = int(np.log2(resolution_h))
-    res_log2_w = int(np.log2(resolution_w))
-    
-    res_log2_max = max(res_log2_h, res_log2_w)
-    
-    import fractions
-    frac = fractions.Fraction(resolution_h, resolution_w)
-    ld = frac.limit_denominator()
-    min_h = ld.numerator # fix ratio based on h and w
-    min_w = ld.denominator
-    while (min_h < 4 and min_w < 4):
-        min_h *= 2
-        min_w *= 2
-    
+    fmap_base = 32 << 10
+    fmap_max = 1024
+    dlatent_size = 1024
+
+    num_channels = int(os.environ["NUM_CHANNELS"]) if "NUM_CHANNELS" in os.environ else num_channels
+
+    resolution_log2 = int(np.log2(resolution))
+    assert resolution == 2**resolution_log2 and resolution >= 4
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
-    num_layers = res_log2_max * 2 - 2
+    num_layers = resolution_log2 * 2 - 2
     images_out = None
 
     # Primary inputs.
@@ -466,7 +365,7 @@ def G_synthesis_stylegan2(
     for layer_idx in range(num_layers - 1):
         res = (layer_idx + 5) // 2
         shape = [1, 1, 2**res, 2**res]
-        noise_inputs.append(tf.get_variable('noise%d' % layer_idx, shape=shape, initializer=tf.initializers.random_normal(), trainable=False))
+        noise_inputs.append(tf.get_variable('noise%d' % layer_idx, shape=shape, initializer=tf.initializers.random_normal(), trainable=False, use_resource=True))
 
     # Single convolution layer with all the bells and whistles.
     def layer(x, layer_idx, fmaps, kernel, up=False):
@@ -475,61 +374,51 @@ def G_synthesis_stylegan2(
             noise = tf.random_normal([tf.shape(x)[0], 1, x.shape[2], x.shape[3]], dtype=x.dtype)
         else:
             noise = tf.cast(noise_inputs[layer_idx], x.dtype)
-        noise_strength = tf.get_variable('noise_strength', shape=[], initializer=tf.initializers.zeros())
+        noise_strength = tf.get_variable('noise_strength', shape=[], initializer=tf.initializers.zeros(), use_resource=True)
         x += noise * tf.cast(noise_strength, x.dtype)
         return apply_bias_act(x, act=act)
 
     # Building blocks for main layers.
-    def block(x, res): # res = 3..res_log2
+    def block(x, res): # res = 3..resolution_log2
         t = x
-        layer_idx = res*2-5
-        fmaps_idx = res-1
         with tf.variable_scope('Conv0_up'):
-            x = layer(x, layer_idx=layer_idx, fmaps=nf(fmaps_idx), kernel=3, up=True)
-        if use_selfattention(res) and toggle_selfattention_g():
-            print('Adding self-attention block to generator')
-            x = non_local_block(x, "SelfAtten", use_sn=True)
+            x = layer(x, layer_idx=res*2-5, fmaps=nf(res-1), kernel=3, up=True)
         with tf.variable_scope('Conv1'):
-            x = layer(x, layer_idx=layer_idx+1, fmaps=nf(fmaps_idx), kernel=3)
-
+            x = layer(x, layer_idx=res*2-4, fmaps=nf(res-1), kernel=3)
         if architecture == 'resnet':
             with tf.variable_scope('Skip'):
-                t = conv2d_layer(t, fmaps=nf(fmaps_idx), kernel=1, up=True, resample_kernel=resample_kernel)
+                t = conv2d_layer(t, fmaps=nf(res-1), kernel=1, up=True, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
         return x
-
     def upsample(y):
         with tf.variable_scope('Upsample'):
             return upsample_2d(y, k=resample_kernel)
-
     def torgb(x, y, res): # res = 2..resolution_log2
         with tf.variable_scope('ToRGB'):
             t = apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2-3], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
-            return t if y is None else y + t
+            return graph_images(t if y is None else y + t, res=2**res)
 
     # Early layers.
     y = None
-    res_log2_min = int(np.log2(max(min_h,min_w)))
-    # assert min_h == 2**res_log2_min
-    assert res_log2_min < res_log2_max
-    scope = '%dx%d' % (min_h, min_w)
-    with tf.variable_scope(scope):
+    with tf.variable_scope('4x4'):
         with tf.variable_scope('Const'):
-            x = tf.get_variable('const', shape=[1, nf(1), min_h, min_w], initializer=tf.initializers.random_normal())
+            x = tf.get_variable('const', shape=[1, nf(1), 4, 4], initializer=tf.initializers.random_normal(), use_resource=True)
             x = tf.tile(tf.cast(x, dtype), [tf.shape(dlatents_in)[0], 1, 1, 1])
         with tf.variable_scope('Conv'):
             x = layer(x, layer_idx=0, fmaps=nf(1), kernel=3)
         if architecture == 'skip':
-            y = torgb(x, y, res_log2_min)
+            y = torgb(x, y, 2)
 
     # Main layers.
-    for res in range(res_log2_min + 1, res_log2_max + 1):
-        scope = '%dx%d' % (min_h * 2**(res-2), min_w * 2**(res-2))
-        with tf.variable_scope(scope):
+    for res in range(3, resolution_log2 + 1):
+        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
             x = block(x, res)
+            if 2**res == 64 and False:
+                print('Adding self-attention block to generator')
+                x = non_local_block(x, "SelfAtten", use_sn=True)
             if architecture == 'skip':
                 y = upsample(y)
-            if architecture == 'skip' or res == res_log2_max:
+            if architecture == 'skip' or res == resolution_log2:
                 y = torgb(x, y, res)
     images_out = y
 
@@ -542,7 +431,7 @@ def G_synthesis_stylegan2(
 
 def D_stylegan(
     images_in,                          # First input: Images [minibatch, channel, height, width].
-    labels_in,                          # Second input: Labels1 [minibatch, label_size].
+    labels_in,                          # Second input: Labels [minibatch, label_size].
     num_channels        = 3,            # Number of input color channels. Overridden based on dataset.
     resolution          = 1024,         # Input resolution. Overridden based on dataset.
     label_size          = 0,            # Dimensionality of the labels, 0 if no labels. Overridden based on dataset.
@@ -559,6 +448,8 @@ def D_stylegan(
     is_template_graph   = False,        # True = template graph constructed by the Network class, False = actual evaluation.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    num_channels = int(os.environ["NUM_CHANNELS"]) if "NUM_CHANNELS" in os.environ else num_channels
+
     resolution_log2 = int(np.log2(resolution))
     assert resolution == 2**resolution_log2 and resolution >= 4
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
@@ -569,7 +460,7 @@ def D_stylegan(
     labels_in.set_shape([None, label_size])
     images_in = tf.cast(images_in, dtype)
     labels_in = tf.cast(labels_in, dtype)
-    lod_in = tf.cast(tf.get_variable('lod', initializer=np.float32(0.0), trainable=False), dtype)
+    lod_in = tf.cast(tf.get_variable('lod', initializer=np.float32(0.0), trainable=False, use_resource=True), dtype)
 
     # Building blocks for spatial layers.
     def fromrgb(x, res): # res = 2..resolution_log2
@@ -624,11 +515,8 @@ def D_stylegan(
         with tf.variable_scope('Dense0'):
             x = apply_bias_act(dense_layer(x, fmaps=nf(0)), act=act)
 
-    # Output layer with label conditioning from "Which Training Methods for GANs do actually Converge?"
     with tf.variable_scope('Output'):
-        x = apply_bias_act(dense_layer(x, fmaps=max(labels_in.shape[1], 1)))
-        if labels_in.shape[1] > 0:
-            x = tf.reduce_sum(x * labels_in, axis=1, keepdims=True)
+        x = apply_bias_act(dense_layer(x, fmaps=1))
     scores_out = x
 
     # Output.
@@ -645,8 +533,7 @@ def D_stylegan2(
     images_in,                          # First input: Images [minibatch, channel, height, width].
     labels_in,                          # Second input: Labels [minibatch, label_size].
     num_channels        = 3,            # Number of input color channels. Overridden based on dataset.
-    resolution_h        = -1,
-    resolution_w        = -1,
+    resolution          = 1024,         # Input resolution. Overridden based on dataset.
     label_size          = 0,            # Dimensionality of the labels, 0 if no labels. Overridden based on dataset.
     fmap_base           = 16 << 10,     # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
@@ -660,25 +547,17 @@ def D_stylegan2(
     resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
-    res_log2_h = int(np.log2(resolution_h))
-    res_log2_w = int(np.log2(resolution_w))
-    
-    res_log2_max = max(res_log2_h, res_log2_w)
-    
-    import fractions
-    frac = fractions.Fraction(resolution_h, resolution_w)
-    ld = frac.limit_denominator()
-    min_h = ld.numerator # fix ratio based on h and w
-    min_w = ld.denominator
-    while (min_h < 4 and min_w < 4):
-        min_h *= 2
-        min_w *= 2
-    
+    mbstd_group_size = 32
+    mbstd_num_features = 4
+    num_channels = int(os.environ["NUM_CHANNELS"]) if "NUM_CHANNELS" in os.environ else num_channels
+
+    resolution_log2 = int(np.log2(resolution))
+    assert resolution == 2**resolution_log2 and resolution >= 4
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
 
-    images_in.set_shape([None, num_channels, resolution_h, resolution_w])
+    images_in.set_shape([None, num_channels, resolution, resolution])
     labels_in.set_shape([None, label_size])
     images_in = tf.cast(images_in, dtype)
     labels_in = tf.cast(labels_in, dtype)
@@ -692,9 +571,6 @@ def D_stylegan2(
         t = x
         with tf.variable_scope('Conv0'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-1), kernel=3), act=act)
-        if use_selfattention(res) and toggle_selfattention_d():
-            print('Adding self-attention block to discriminator')
-            x = non_local_block(x, "SelfAtten", use_sn=True)
         with tf.variable_scope('Conv1_down'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-2), kernel=3, down=True, resample_kernel=resample_kernel), act=act)
         if architecture == 'resnet':
@@ -702,30 +578,28 @@ def D_stylegan2(
                 t = conv2d_layer(t, fmaps=nf(res-2), kernel=1, down=True, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
         return x
-
     def downsample(y):
         with tf.variable_scope('Downsample'):
             return downsample_2d(y, k=resample_kernel)
 
     # Main layers.
-    res_log2_min = int(np.log2(max(min_h,min_w)))
-    assert res_log2_min < res_log2_max
     x = None
     y = images_in
-    for res in range(res_log2_max, res_log2_min, -1):
-        scope = '%dx%d' % (min_h * 2**(res-2), min_w * 2**(res-2))
-        with tf.variable_scope(scope):
-            if architecture == 'skip' or res == res_log2_max:
+    for res in range(resolution_log2, 2, -1):
+        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
+            if architecture == 'skip' or res == resolution_log2:
                 x = fromrgb(x, y, res)
+            if 2**res == 64 and False:
+                print('Adding self-attention block to discriminator')
+                x = non_local_block(x, "SelfAtten", use_sn=True)
             x = block(x, res)
             if architecture == 'skip':
                 y = downsample(y)
-                
+
     # Final layers.
-    scope = '%dx%d' % (min_h, min_w)
-    with tf.variable_scope(scope):
+    with tf.variable_scope('4x4'):
         if architecture == 'skip':
-            x = fromrgb(x, y, res_log2_min)
+            x = fromrgb(x, y, 2)
         if mbstd_group_size > 1:
             with tf.variable_scope('MinibatchStddev'):
                 x = minibatch_stddev_layer(x, mbstd_group_size, mbstd_num_features)
@@ -733,12 +607,9 @@ def D_stylegan2(
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(1), kernel=3), act=act)
         with tf.variable_scope('Dense0'):
             x = apply_bias_act(dense_layer(x, fmaps=nf(0)), act=act)
-            
-    # Output layer with label conditioning from "Which Training Methods for GANs do actually Converge?"
+
     with tf.variable_scope('Output'):
-        x = apply_bias_act(dense_layer(x, fmaps=max(labels_in.shape[1], 1)))
-        if labels_in.shape[1] > 0:
-            x = tf.reduce_sum(x * labels_in, axis=1, keepdims=True)
+        x = apply_bias_act(dense_layer(x, fmaps=1))
     scores_out = x
 
     # Output.
@@ -748,11 +619,13 @@ def D_stylegan2(
 
 #----------------------------------------------------------------------------
 
+
 NORMAL_INIT = "normal"
 TRUNCATED_INIT = "truncated"
 ORTHOGONAL_INIT = "orthogonal"
 INITIALIZERS = [NORMAL_INIT, TRUNCATED_INIT, ORTHOGONAL_INIT]
 
+#@gin.configurable("weights")
 def weight_initializer(initializer=NORMAL_INIT, stddev=0.02):
   """Returns the initializer for the given name.
 
@@ -771,6 +644,7 @@ def weight_initializer(initializer=NORMAL_INIT, stddev=0.02):
     return tf.initializers.orthogonal()
   raise ValueError("Unknown weight initializer {}.".format(initializer))
 
+#@gin.configurable(blacklist=["inputs"])
 def spectral_norm(inputs, epsilon=1e-12, singular_value="left", return_normalized=True, power_iteration_rounds=1):
   """Performs Spectral Normalization on a weight tensor.
 
@@ -852,6 +726,41 @@ def spectral_norm(inputs, epsilon=1e-12, singular_value="left", return_normalize
   else:
     return w, norm_value
 
+def graph_name(name):
+  name = name.split(':')[0]
+  name = name.split('/strided_slice_')[0]
+  name = name.split('/Identity_')[0]
+  if name.startswith('D_loss/G/G_synthesis/'):
+    name = name.replace('D_loss/G/G_synthesis/', '')
+    return 'G_' + name
+  elif name.startswith('D_loss/D/'):
+    name = name.replace('D_loss/D/', '')
+    return 'D_' + name
+
+def graph_spectral_norm(w):
+  w1, norm = spectral_norm(w, return_normalized=False)
+  value = norm[0][0]
+  name = graph_name(value.name)
+  if name is not None:
+    autosummary('specnorm_' + name, value)
+  else:
+    tf.logging.info('ignoring autosummary(%s, %s)', repr(value.name), repr(value))
+  if 'USE_SPECNORM' in os.environ:
+    tf.logging.info('Using spectral normalization for %s', repr(w))
+    w_normalized = w1 / norm
+    w_normalized = tf.reshape(w_normalized, w.shape)
+    return w_normalized
+  return w
+
+def graph_images(images, res):
+    value = tf.identity(images)
+    name = graph_name(value.name)
+    # if name is not None:
+    #   autoimages(name, value, res=res)
+    # else:
+    #   tf.logging.info('ignoring autoimages(%s, %s)', repr(name), repr(value))
+    return images
+
 def conv2d(inputs, output_dim, k_h, k_w, d_h, d_w, stddev=0.02, name="conv2d",
            use_sn=False, use_bias=True):
   """Performs 2D convolution of the input."""
@@ -861,7 +770,7 @@ def conv2d(inputs, output_dim, k_h, k_w, d_h, d_w, stddev=0.02, name="conv2d",
         initializer=weight_initializer(stddev=stddev), use_resource=True)
     if use_sn:
       w = spectral_norm(w)
-    outputs = tf.nn.conv2d(inputs, w, strides=[1, d_h, d_w, 1], padding="SAME")
+    outputs = _o(tf.nn.conv2d(_i(inputs), w, strides=[1, d_h, d_w, 1], padding="SAME", data_format="NHWC"))
     if use_bias:
       bias = tf.get_variable(
           "bias", [output_dim], initializer=tf.constant_initializer(0.0), use_resource=True)
@@ -891,7 +800,6 @@ def non_local_block(x, name, use_sn):
     return tf.reshape(inputs, (-1, shape[1] * shape[2], shape[3]))
 
   with tf.variable_scope(name):
-    x = _i(x)
     h, w, num_channels = x.get_shape().as_list()[1:]
     num_channels_attn = num_channels // 8
     num_channels_g = num_channels // 2
@@ -921,15 +829,5 @@ def non_local_block(x, name, use_sn):
     sigma = tf.get_variable("sigma", [], initializer=tf.zeros_initializer(), use_resource=True)
     attn_g = conv1x1(attn_g, num_channels, name="conv2d_attn_g", use_sn=use_sn,
                      use_bias=False)
-    out = x + sigma * attn_g
-    out = _o(out)
-    return out
+    return x + sigma * attn_g
 
-def use_selfattention(res):
-    return 2**res == 64
-
-def toggle_selfattention_g():
-    return False
-
-def toggle_selfattention_d():
-    return False
