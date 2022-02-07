@@ -101,8 +101,7 @@ def main(args):
     frames = moviepy.editor.ImageSequenceClip(frames, fps=30)
 
     # Generate video at the current date and timestamp
-    timestamp = datetime.now().strftime("%d-%m-%Y-%I-%M-%S-%p")
-    mp4_file = './circular-'+timestamp+'.mp4'
+    mp4_file = './circular.mp4'
     mp4_codec = 'libx264'
     mp4_bitrate = '3M'
     mp4_fps = 30 # 20
